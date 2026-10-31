@@ -42,3 +42,19 @@ class SimulatorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AgentPidTests(unittest.TestCase):
+    def test_agent_pid_matches_shim_launch(self):
+        import sys as _sys
+        _sys.path.insert(0, str(ROOT))
+        from backend.app.session_observer import _agent_pid
+        tree = [
+            {"pid": 10, "ppid": 1, "comm": "bash", "cmdline": "-bash"},
+            {"pid": 11, "ppid": 10, "comm": "node",
+             "cmdline": "node /home/u/.local/bin/codex --yolo"},
+            {"pid": 12, "ppid": 11, "comm": "git", "cmdline": "git status"},
+        ]
+        self.assertEqual(_agent_pid(tree, "codex"), 11)
+        self.assertIsNone(_agent_pid(tree, "muse"))
+        self.assertIsNone(_agent_pid(tree, None))

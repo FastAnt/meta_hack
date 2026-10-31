@@ -16,6 +16,19 @@ import time
 AGENT_BINARIES = ("muse", "codex", "claude")
 
 
+def _agent_pid(tree, name):
+    """Pid of the agent process, however it was launched (native
+    binary or a node/shim wrapper: '/codex' inside the cmdline)."""
+    if not name:
+        return None
+    for proc in tree:
+        cmd = (proc.get("cmdline") or "").lower()
+        if proc.get("comm") == name or f"/{name}" in cmd \
+                or cmd.startswith(name + " "):
+            return proc.get("pid")
+    return None
+
+
 def _proc_info(pid: int) -> dict | None:
     try:
         with open(f"/proc/{pid}/stat", "rb") as fh:
@@ -131,11 +144,7 @@ class SessionObserver(threading.Thread):
                               "process": p["comm"],
                               "cmdline": (p["cmdline"] or "")[:120]}
                              for p in tree[:25]],
-            "agent_pid": next((p["pid"] for p in tree
-                               if agent_cli and (
-                                   p["comm"] == agent_cli or
-                                   (p["cmdline"] or "").lower().startswith(
-                                       agent_cli + " "))), None),
+            "agent_pid": _agent_pid(tree, agent_cli),
             "inferred": {"state": inferred_state, "confidence": confidence,
                          "source": "heuristic"},
             "observed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

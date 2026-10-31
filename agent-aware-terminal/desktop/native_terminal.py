@@ -185,6 +185,14 @@ class Core:
         from backend.app.liquid_client import LiquidClient
         from backend.app.simulator import SimulationFeed
         self.liquid = LiquidClient()
+        from collections import deque
+        self.decisions = deque(maxlen=60)
+        self.liquid_stats = {"screen_calls": 0, "screen_ok": 0,
+                             "screen_err": 0, "last_choice": "",
+                             "last_conf": 0.0}
+        self._prev_sig = None
+        self.dlog("boot", f"Liquid System-1: "
+                    f"{'configured (' + self.liquid.model + ')' if self.liquid.configured else 'NOT CONFIGURED (no LIQUID_API_KEY)'}")
         self.sim_feed = None
         sim_path = os.environ.get("AAT_SIM_FILE")
         if sim_path and os.path.exists(sim_path):
@@ -379,6 +387,8 @@ class Core:
                 if p is not None:
                     g["p"] = round(float(p), 3)
                     g["source"] = f"liquid {self.liquid.model}"
+                    self.dlog("gate", f"decision={g.get('decision')} "
+                                      f"p={p} (source={g['source']})")
                     g["decision"] = "long" if p >= 0.5 else "short"
                 else:
                     long_task = plan_n >= 3 or steps >= 4 or elapsed >= 25
@@ -405,7 +415,13 @@ class Core:
         console text (see LiquidClient.classify_screen)."""
         if screen and agent.get("agent") \
                 and agent.get("source") != "agent_event":
-            if not self.liquid.configured or self._classifying:
+            if not self.liquid.configured:
+                if not getattr(self, "_nokey_logged", False):
+                    self._nokey_logged = True
+                    self.dlog("system1", "screen understanding OFF: "
+                                         "no LIQUID_API_KEY found")
+                return
+            if self._classifying:
                 return
             now = time.time()
             if now - getattr(self, "_screen_at", 0) < 4:
@@ -414,9 +430,18 @@ class Core:
             self._classifying = True
 
             def _ask_screen():
+                self.liquid_stats["screen_calls"] += 1
                 try:
                     out = self.liquid.classify_screen(
                         screen, agent.get("agent") or "agent")
+                    if out:
+                        self.liquid_stats["screen_ok"] += 1
+                        self.liquid_stats["last_choice"] = out["choice"]
+                        self.liquid_stats["last_conf"] = out["confidence"]
+                        self.dlog("system1",
+                                  f"screen -> {out['choice']} "
+                                  f"({out['confidence']:.2f}), "
+                                  f"mode={out['mode']}")
                     if out and out["confidence"] >= 0.45 and not (
                             out["mode"] in ("shuffle", "question")
                             and out["confidence"] < 0.6):
@@ -425,8 +450,9 @@ class Core:
                             "choice": out["choice"],
                             "confidence": out["confidence"],
                             "screen": True}
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self.liquid_stats["screen_err"] += 1
+                    self.dlog("system1", f"screen classify error: {exc}")
                 finally:
                     self._classifying = False
             threading.Thread(target=_ask_screen, daemon=True).start()
@@ -533,6 +559,20 @@ class Core:
         if ev:
             self.timeline.appendleft(ev)
 
+    def dlog(self, tag: str, msg: str):
+        """Decision log: every meaningful choice the visualization
+        makes, with its source. Shown in Diagnostics, kept in
+        DATA_DIR/decisions.log — this is how we prove what ran."""
+        line = f"{time.strftime('%H:%M:%S')} [{tag}] {msg}"
+        self.decisions.append(line)
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            with open(DATA_DIR / "decisions.log", "a",
+                      encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        except Exception:
+            pass
+
     def refresh_agent_state(self):
         """Adapter facts win; observer heuristics are the fallback."""
         if self.sim_feed is not None and self.sim_feed.state:
@@ -583,6 +623,12 @@ class Core:
                 "command": fg_cmd,
                 "source": "heuristic", "files": [], "plan": [],
             }
+        sig = (self.agent_state.get("agent"), self.agent_state.get("state"),
+               self.agent_state.get("source"))
+        if sig != self._prev_sig:
+            self._prev_sig = sig
+            self.dlog("state", f"{sig[0] or 'no-agent'} · {sig[1]} "
+                               f"(source={sig[2]})")
 
     # -- Muse Spark / Muse Image (threads) ------------------------------
     def enrich_async(self):
@@ -962,9 +1008,18 @@ def load_keys_file():
     candidates = []
     if os.environ.get("AAT_KEYS_FILE"):
         candidates.append(Path(os.environ["AAT_KEYS_FILE"]))
+    # The built binary lives at dist/agent-aware-terminal/ (plus a
+    # PyInstaller _internal dir), so walk up from RES_ROOT to find
+    # the project keys.sh wherever the app was launched from.
+    candidates.append(Path.cwd() / "keys.sh")
+    here = RES_ROOT
+    for _ in range(5):
+        candidates.append(here / "keys.sh")
+        if here.parent == here:
+            break
+        here = here.parent
     candidates += [
-        Path.cwd() / "keys.sh",
-        RES_ROOT / "keys.sh",
+        DATA_DIR / "keys.sh",
         Path.home() / ".config" / "agent-aware-terminal" / "keys.sh",
     ]
     for path in candidates:
@@ -2270,7 +2325,14 @@ def run_gui(project_arg: str | None) -> int:
             f"System-1 gate (Liquid): {core.gate.get('source') or 'not asked yet'}"
             f" · decision={core.gate.get('decision')} · p={core.gate.get('p')}"
             f" · steps={core.step_count}"
-            f" · key={'set' if core.liquid.configured else 'LIQUID_API_KEY missing'}\n\n"
+            f" · key={'set' if core.liquid.configured else 'LIQUID_API_KEY missing'}\n"
+            f"System-1 screen: {core.liquid_stats['screen_ok']}/"
+            f"{core.liquid_stats['screen_calls']} calls ok"
+            f" · errors={core.liquid_stats['screen_err']}"
+            f" · last={core.liquid_stats['last_choice'] or '—'} "
+            f"({core.liquid_stats['last_conf']:.2f})\n\n"
+            f"Decision log (latest):\n"
+            f"{chr(10).join(list(core.decisions)[-8:]) or '—'}\n\n"
             f"Process tree:\n{tree or '—'}")
 
     def tick():
@@ -2311,11 +2373,20 @@ def run_gui(project_arg: str | None) -> int:
             core.classify_tick(agent, scr)
             ov = core.mode_override
             ambiguous = not agent.get("tool") or agent.get("state") == "working"
+            via = "deterministic"
             if ov and ambiguous and mode in ("build", "blinky") \
                     and time.time() - ov["at"] < 9:
                 mode = ov["mode"]
+                via = ("system1-screen" if ov.get("screen")
+                       else "system1-activity")
             S["mode"] = mode
             S["square"].set_mode(mode)
+            if S.get("_last_mode") != mode:
+                core.dlog("mode", f"{S.get('_last_mode') or '—'} -> {mode} "
+                                  f"via {via} (agent={agent.get('agent')}, "
+                                  f"state={state}, "
+                                  f"src={agent.get('source')})")
+                S["_last_mode"] = mode
             label, title = MODE_CAPTIONS[mode]
             if state == "completed":
                 title = "Done"
