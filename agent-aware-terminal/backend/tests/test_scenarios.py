@@ -338,3 +338,37 @@ class SourcePriorityTests(CoreScenarioTests):
                                        "agent": "muse"}
         self.core.refresh_agent_state()
         self.assertEqual(self.core.agent_state["agent"], "muse")
+
+
+class ScreenTurnTests(CoreScenarioTests):
+    def _codex_idle_snapshot(self):
+        codex = {"pid": 10, "ppid": 1, "comm": "codex",
+                 "cmdline": "codex --yolo"}
+        self.core.snapshot = self._snap([codex], 10)
+        self.core.refresh_agent_state()
+
+    def test_screen_turn_arms_done_window(self):
+        core = self.core
+        core._screen_turn_tick("codex", "thinking", 0.9)
+        core._screen_turn_since = time.time() - 30
+        core._screen_turn_tick("codex", "idle_at_prompt", 0.8)
+        self._codex_idle_snapshot()
+        self.assertTrue(core.agent_state.get("turn_done"))
+        self.assertEqual(
+            self.native.mode_for_agent(core.agent_state), "done")
+
+    def test_short_screen_turn_does_not_arm(self):
+        core = self.core
+        core._screen_turn_tick("codex", "thinking", 0.9)
+        core._screen_turn_tick("codex", "finished", 0.9)
+        self._codex_idle_snapshot()
+        self.assertFalse(core.agent_state.get("turn_done"))
+
+    def test_failed_screen_turn_does_not_arm(self):
+        core = self.core
+        core._screen_turn_tick("codex", "writing_code", 0.9)
+        core._screen_turn_tick("codex", "failed", 0.9)
+        core._screen_turn_since = time.time() - 30
+        core._screen_turn_tick("codex", "idle_at_prompt", 0.8)
+        self._codex_idle_snapshot()
+        self.assertFalse(core.agent_state.get("turn_done"))

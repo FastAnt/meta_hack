@@ -427,6 +427,45 @@ class Core:
         return g
 
     # -- System-1 activity classification (ambiguous moments) -------------
+    SCREEN_WORK = {"thinking", "searching_system", "searching_web",
+                   "writing_code", "installing", "downloading",
+                   "compiling", "running_tests", "waiting_for_user",
+                   "asking_question"}
+
+    def _screen_turn_tick(self, agent_name, choice, conf):
+        """End-of-turn detection for adapter-less agents.
+
+        The process observer often sees an interactive agent (Codex)
+        as idle for its whole turn — the work happens in-process.
+        The screen verdicts are then the only turn signal: work
+        verdicts open a screen turn, and 'finished'/'idle_at_prompt'
+        after a real turn arm the DONE window, just like the
+        process-driven path does."""
+        if choice in self.SCREEN_WORK and conf >= 0.45:
+            if not getattr(self, "_screen_turn_active", False):
+                self._screen_turn_active = True
+                self._screen_turn_failed = False
+                self._screen_turn_since = time.time()
+                self._screen_turn_agent = agent_name
+            return
+        if choice == "failed":
+            if getattr(self, "_screen_turn_active", False):
+                self._screen_turn_failed = True
+            return
+        if choice in ("finished", "idle_at_prompt"):
+            active = getattr(self, "_screen_turn_active", False)
+            started = getattr(self, "_screen_turn_since", 0) or 0
+            if active and agent_name == getattr(
+                    self, "_screen_turn_agent", None) \
+                    and time.time() - started >= 5 \
+                    and not getattr(self, "_screen_turn_failed", False) \
+                    and (choice == "idle_at_prompt" or conf >= 0.25):
+                self._done_until = time.time() + 7
+                self._done_agent = agent_name
+                self.dlog("mode", "screen turn ended -> done window "
+                                  f"({agent_name}, via {choice})")
+            self._screen_turn_active = False
+
     def classify_tick(self, agent: dict, screen: str = ""):
         """When the event stream only says generic "working" (no tool),
         ask Liquid d1.1 what the agent is actually doing. Facts from the
@@ -475,6 +514,9 @@ class Core:
                                   f"screen -> {out['choice']} "
                                   f"({out['confidence']:.2f}), "
                                   f"mode={out['mode']}")
+                        self._screen_turn_tick(
+                            agent.get("agent"), out["choice"],
+                            out["confidence"])
                     if out and out["confidence"] >= 0.45 and not (
                             out["mode"] in ("shuffle", "question")
                             and out["confidence"] < 0.6):
