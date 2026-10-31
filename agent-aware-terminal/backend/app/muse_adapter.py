@@ -79,6 +79,8 @@ class MuseAdapter(threading.Thread):
             "last_failure": None,
         }
         self._stop = threading.Event()
+        self._replay_pending = False
+        self._in_replay = False
         self._message_pending = False
         self._last_message = ""
         self._last_record_ts = 0.0
@@ -221,7 +223,8 @@ class MuseAdapter(threading.Thread):
             return
 
         if pt == "session.end":
-            self._emit(state="completed", activity="Session ended")
+            if not self._in_replay:
+                self._emit(state="completed", activity="Session ended")
             return
 
         if pt != "runtime.session":
@@ -273,7 +276,9 @@ class MuseAdapter(threading.Thread):
             # (Approval waits arrive as approval_wait events.)
             text = ev.get("text", "")
             if text:
-                self._message_pending = True
+                if not self._in_replay:
+                    # Only a reply seen live may complete a turn later.
+                    self._message_pending = True
                 self._last_message = _short(text, 150)
                 self.state["last_reply"] = _short(text, 3000)
                 cur = self.state.get("state")
@@ -304,8 +309,10 @@ class MuseAdapter(threading.Thread):
             return
         if size < self.offset:  # rotated / replaced
             self.offset = 0
+            self._replay_pending = True
         if size == self.offset:
             return
+        self._in_replay = self._replay_pending
         with open(self.current_file, encoding="utf-8", errors="replace") as fh:
             fh.seek(self.offset)
             chunk = fh.read()
@@ -333,6 +340,15 @@ class MuseAdapter(threading.Thread):
                     self._handle_record(rec)
                 except Exception:
                     pass
+        if self._in_replay:
+            self._in_replay = False
+            self._replay_pending = False
+            # Backlog is context, not a live ending: whatever the
+            # history replay emitted, an attached session starts
+            # quiet. No DONE, no scores for sessions we never saw
+            # working.
+            self._emit(state="idle", tool=None, command=None,
+                       needs=None, last_failure=None, activity="")
 
     def _check_quiet(self):
         """Interactive sessions emit no session.end at the end of a
@@ -362,6 +378,7 @@ class MuseAdapter(threading.Thread):
                     # Fresh log: replay from start; old log: only new events.
                     fresh = time.time() - os.path.getmtime(found) < 180
                     self.offset = 0 if fresh else os.path.getsize(found)
+                    self._replay_pending = fresh
                     self.state["session_id"] = None
                 if self.current_file:
                     self._read_new()

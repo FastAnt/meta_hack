@@ -318,7 +318,14 @@ class Core:
             self.step_count += 1
         if state in ("completed", "failed") and self._last_state in \
                 BUSY + ("awaiting_user",):
-            self._finish_session(state)
+            if self.working_since and \
+                    time.time() - self.working_since >= 3:
+                self._finish_session(state)
+            else:
+                # A completion we never watched happen (e.g. session
+                # history attached at startup) gets no score.
+                self.dlog("score", "completion skipped: "
+                                   "turn not watched live")
             self._baseline = None
         self._last_state = state or self._last_state
         with self._lock:
@@ -576,6 +583,14 @@ class Core:
                 results_ref["safety"] = {
                     "score": float(max(0, min(4, safe))), "confidence": 0.0}
                 results_ref["source"] = "heuristic (no LIQUID_API_KEY)"
+            self.dlog(
+                "score",
+                f"to System-1: task={_s(st.get('task') or '?', 40)!r} "
+                f"files={len(files)} reply={len(reply)}ch -> "
+                f"completion={results_ref['completion']['score']}/4 "
+                f"({results_ref['completion'].get('confidence', 0):.0%}), "
+                f"safety={results_ref['safety']['score']}/4 "
+                f"[{results_ref['source']}]")
 
         threading.Thread(target=_score, daemon=True).start()
 
@@ -1012,6 +1027,9 @@ def _read_vte_text(term) -> str:
     except Exception:
         pass
     return ""
+
+
+_s = lambda s, n=60: " ".join(str(s).split())[:n]
 
 
 def mode_for_agent(agent: dict) -> str:

@@ -291,3 +291,36 @@ class HealthCheckTests(unittest.TestCase):
         self.assertEqual(
             native.mode_for_agent({"state": "idle", "turn_done": True}),
             "done")
+
+
+class ReplayHistoryTests(unittest.TestCase):
+    def test_backlog_never_completes(self):
+        import json as _json
+        import tempfile
+        from backend.app.muse_adapter import MuseAdapter
+        events = []
+        adapter = MuseAdapter(events.append, lambda: "/tmp", "/tmp/nope")
+        lines = [
+            {"record_type": "event",
+             "payload_type": "runtime.session.metadata",
+             "stream": {"id": "s1"},
+             "payload": {"record": {"model_id": "muse-spark-1.3"}}},
+            {"record_type": "event", "payload_type": "session.end",
+             "stream": {"id": "s1"}, "payload": {}},
+        ]
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl",
+                                         delete=False) as fh:
+            for rec in lines:
+                fh.write(_json.dumps(rec) + "\n")
+            path = fh.name
+        adapter.current_file = path
+        adapter.offset = 0
+        adapter._replay_pending = True
+        adapter._read_new()
+        states = [e.get("state") for e in events]
+        self.assertNotIn("completed", states)
+        self.assertEqual(adapter.state["state"], "idle")
+        # live session.end still completes
+        adapter._emit(state="working")
+        adapter._handle_record(lines[1])
+        self.assertEqual(adapter.state["state"], "completed")
