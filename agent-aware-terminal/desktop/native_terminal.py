@@ -774,9 +774,13 @@ button.quiet:hover {{ color: {p['text']}; }}
 
 
 MODE_CAPTIONS = {
+    "compile": ("COMPILING", "Compiling"),
+    "link": ("LINKING", "Linking"),
+    "copy": ("COPYING", "Copying files"),
+    "install": ("INSTALLING", "Installing"),
     "done": ("DONE", "Done"),
     "blinky": ("BLINKY", "Idle"),
-    "glitch": ("GLITCH", "Searching the system"),
+    "glitch": ("SCANNING", "Searching the system"),
     "trail": ("TRAIL", "Searching the web"),
     "shuffle": ("SHUFFLE", "The agent needs you"),
 "flash": ("THINKING", "Thinking"),
@@ -801,6 +805,28 @@ def mode_for_agent(agent: dict) -> str:
         return "flash"
     if st in ("working", "tool_running"):
         tool = (agent.get("tool") or "").lower()
+        cmd = (agent.get("command") or "").lower()
+        act = (agent.get("activity") or "").lower()
+        if cmd:
+            # What kind of shell work is this? (facts from the command)
+            if re.search(r"(^|[;&|]\s*)(ld|lld|gold|mold)\b", cmd) \
+                    or "linking" in act \
+                    or (re.search(r"\b(gcc|g\+\+|clang)\b", cmd)
+                        and "-c" not in cmd and ".o" in cmd):
+                return "link"
+            if re.search(r"\b(pip3?|uv|npm|pnpm|yarn|apt|apt-get|brew|gem"
+                         r"|poetry|conda|dnf|pacman)\b[^;&|]*\b(install|add)\b"
+                         r"|\bcargo\s+add\b|\bgo\s+get\b", cmd):
+                return "install"
+            if re.search(r"(^|[;&|]\s*)(cp|rsync|scp|sftp|robocopy)\b", cmd):
+                return "copy"
+            if re.search(r"\b(make|cmake|ninja|gcc|g\+\+|clang|cc|rustc"
+                         r"|javac|kotlinc|swiftc|tsc|webpack|mvn|gradle"
+                         r"|dotnet)\b|\b(cargo|go|npm|pnpm|yarn)\s+"
+                         r"(build|test|check)\b|\bnpm\s+run\s+build\b"
+                         r"|\b(pytest|tox)\b|\bpython3?\s+-m\s+"
+                         r"(pytest|unittest|build)\b", cmd):
+                return "compile"
         if tool in WEB_TOOLS:
             return "trail"
         if tool in LOCAL_SEARCH_TOOLS:
@@ -1099,15 +1125,32 @@ def run_gui(project_arg: str | None) -> int:
                     sy = max(0.1, abs(phase - 0.11) / 0.11)
                 self._fill(cr, x, y + s * (1 - sy) / 2, s, s * sy, 0.92)
             elif mode == "glitch":
-                self._fill(cr, x, y, s, s, 0.16)
-                active = (t % 1.6) < 0.22
-                rng = random.Random(int(t * 9) if active else 0)
-                rows = 6
-                for i in range(rows):
-                    off = (rng.uniform(-0.09, 0.09) * s) if active else 0.0
-                    yy = y + s * i / rows
-                    self._fill(cr, x + off, yy + 1, s, s / rows - 2,
-                               0.55 + 0.35 * rng.random(), r=2)
+                # Searching the system: a field of small file squares;
+                # one after another swells up as it is inspected.
+                self._fill(cr, x, y, s, s, 0.08)
+                self._rr(cr, x, y, s, s, 0.045 * s)
+                cr.set_source_rgba(*PAL["square"], 0.35 * self._am)
+                cr.set_line_width(1.5)
+                cr.stroke()
+                cols, rows = 5, 4
+                cell = 0.105 * s
+                gapx = (0.78 * s - cols * cell) / (cols - 1)
+                gapy = (0.62 * s - rows * cell) / (rows - 1)
+                gx = x + (s - 0.78 * s) / 2
+                gy = y + (s - 0.62 * s) / 2
+                active = int(t / 0.30) % (cols * rows)
+                frac = (t % 0.30) / 0.30
+                for i in range(cols * rows):
+                    cx0 = gx + (i % cols) * (cell + gapx) + cell / 2
+                    cy0 = gy + (i // cols) * (cell + gapy) + cell / 2
+                    if i == active:
+                        zoom = 1 + 0.75 * math.sin(math.pi * frac)
+                        sz = cell * zoom
+                        self._fill(cr, cx0 - sz / 2, cy0 - sz / 2, sz, sz,
+                                   0.95, r=0.02 * s)
+                    else:
+                        self._fill(cr, cx0 - cell / 2, cy0 - cell / 2,
+                                   cell, cell, 0.16, r=0.02 * s)
             elif mode == "trail":
                 # Reviewing pages: identical small squares fly through
                 # the big square left to right, slowing down and
@@ -1170,20 +1213,166 @@ def run_gui(project_arg: str | None) -> int:
                 self._fill(cr, -inner / 2, -inner / 2, inner, inner,
                            0.92, r=0.03 * s)
                 cr.restore()
-            else:  # build
+            elif mode == "compile":
+                # Building software: squares rain down and stack up
+                # inside the big square, Tetris-style.
+                self._fill(cr, x, y, s, s, 0.08)
                 self._rr(cr, x, y, s, s, 0.045 * s)
                 cr.set_source_rgba(*PAL["square"], 0.35 * self._am)
                 cr.set_line_width(1.5)
                 cr.stroke()
-                cells = 4
-                cw = s / cells
-                filled = int(((t % 3.6) / 3.6) * cells * cells + 0.999)
-                for i in range(cells * cells):
-                    col = i % cells
-                    row = cells - 1 - (i // cells)  # build bottom-up
-                    alpha = 0.92 if i < filled else 0.07
-                    self._fill(cr, x + col * cw + 2, y + row * cw + 2,
-                               cw - 4, cw - 4, alpha, r=3)
+                cols = 5
+                cw = 0.148 * s
+                gx = x + (s - cols * cw) / 2
+                floor = y + 0.93 * s
+                pattern = [1, 3, 0, 4, 2, 2, 0, 4, 1, 3, 0, 2, 4]
+                heights = [0] * cols
+                landed_at = []
+                for i, col in enumerate(pattern):
+                    start = 0.35 + i * 0.55
+                    target = floor - (heights[col] + 1) * cw
+                    heights[col] += 1
+                    landed_at.append((col, target, start))
+                cycle = 0.35 + len(pattern) * 0.55 + 1.4
+                tt = t % cycle
+                fade = 1.0
+                if tt > cycle - 0.8:
+                    fade = max(0.0, (cycle - tt) / 0.8)
+                for col, target, start in landed_at:
+                    if tt < start:
+                        continue
+                    fp = min((tt - start) / 0.5, 1.0)
+                    yy = y + 0.04 * s + (target - y - 0.04 * s) * fp ** 1.6
+                    self._fill(cr, gx + col * cw + 1.5, yy + 1.5,
+                               cw - 3, cw - 3, 0.92 * fade, r=0.02 * s)
+            elif mode == "link":
+                # Linking: two squares glide in from the sides and
+                # snap into one.
+                self._fill(cr, x, y, s, s, 0.08)
+                self._rr(cr, x, y, s, s, 0.045 * s)
+                cr.set_source_rgba(*PAL["square"], 0.35 * self._am)
+                cr.set_line_width(1.5)
+                cr.stroke()
+                sz = 0.21 * s
+                cyc = t % 2.8
+                cx, cy = x + s / 2, y + s / 2
+                if cyc < 1.0:
+                    fp = 1 - (1 - cyc) ** 3
+                    off = 0.31 * s - (0.31 - 0.105) * s * fp
+                    self._fill(cr, cx - off - sz / 2, cy - sz / 2, sz, sz,
+                               0.92, r=0.03 * s)
+                    self._fill(cr, cx + off - sz / 2, cy - sz / 2, sz, sz,
+                               0.92, r=0.03 * s)
+                else:
+                    hold = cyc - 1.0
+                    bounce = 1 + 0.10 * math.exp(-hold * 5) * \
+                        abs(math.sin(hold * 9))
+                    msz = sz * bounce
+                    alpha = 0.95 if cyc < 2.4 else \
+                        max(0.0, 0.95 * (2.8 - cyc) / 0.4)
+                    self._fill(cr, cx - msz / 2, cy - msz / 2, msz, msz,
+                               alpha, r=0.03 * s)
+            elif mode == "copy":
+                # Copying: a square appears next to the original.
+                self._fill(cr, x, y, s, s, 0.08)
+                self._rr(cr, x, y, s, s, 0.045 * s)
+                cr.set_source_rgba(*PAL["square"], 0.35 * self._am)
+                cr.set_line_width(1.5)
+                cr.stroke()
+                sz = 0.21 * s
+                cy = y + s / 2
+                lx = x + s / 2 - 0.145 * s
+                rx = x + s / 2 + 0.145 * s
+                self._fill(cr, lx - sz / 2, cy - sz / 2, sz, sz, 0.92,
+                           r=0.03 * s)
+                cyc = t % 2.4
+                if cyc < 0.25:
+                    a, px = 0.92 * (cyc / 0.25), lx
+                elif cyc < 1.15:
+                    fp = (cyc - 0.25) / 0.9
+                    fp = 1 - (1 - fp) ** 3
+                    a, px = 0.55 + 0.37 * fp, lx + (rx - lx) * fp
+                elif cyc < 2.0:
+                    a, px = 0.92, rx
+                else:
+                    a, px = 0.92 * max(0.0, (2.4 - cyc) / 0.4), rx
+                if cyc >= 0.05:
+                    self._fill(cr, px - sz / 2, cy - sz / 2, sz, sz, a,
+                               r=0.03 * s)
+            elif mode == "install":
+                # Installing: packages drop in one by one and settle
+                # into a neat row.
+                self._fill(cr, x, y, s, s, 0.08)
+                self._rr(cr, x, y, s, s, 0.045 * s)
+                cr.set_source_rgba(*PAL["square"], 0.35 * self._am)
+                cr.set_line_width(1.5)
+                cr.stroke()
+                slots = 4
+                sz = 0.16 * s
+                gap = (0.84 * s - slots * sz) / (slots - 1)
+                gx = x + (s - 0.84 * s) / 2
+                base = y + 0.86 * s
+                cyc = t % 4.2
+                for i in range(slots):
+                    start = 0.3 + i * 0.75
+                    if cyc < start:
+                        continue
+                    fp = min((cyc - start) / 0.55, 1.0)
+                    sx = gx + i * (sz + gap)
+                    yy = y + 0.08 * s + (base - sz - y - 0.08 * s) * fp ** 1.5
+                    squash = 1.0
+                    since_land = cyc - start - 0.55
+                    if fp >= 1.0 and 0 <= since_land < 0.3:
+                        squash = 1 - 0.15 * math.sin(
+                            math.pi * since_land / 0.3)
+                    fade = 1.0
+                    if cyc > 3.7:
+                        fade = max(0.0, (4.2 - cyc) / 0.5)
+                    hh = sz * squash
+                    self._fill(cr, sx, yy + (sz - hh), sz, hh,
+                               0.92 * fade, r=0.02 * s)
+            else:  # build — writing code/files
+                # A small square is written line by line, becomes
+                # solid, then files itself away to the left; repeat.
+                self._fill(cr, x, y, s, s, 0.08)
+                self._rr(cr, x, y, s, s, 0.045 * s)
+                cr.set_source_rgba(*PAL["square"], 0.35 * self._am)
+                cr.set_line_width(1.5)
+                cr.stroke()
+                inner = 0.34 * s
+                ix, iy = x + (s - inner) / 2, y + (s - inner) / 2
+                cyc = t % 3.0
+                # the previously finished file rests at the left
+                if cyc >= 1.85:
+                    self._fill(cr, x + 0.10 * s, iy, inner, inner, 0.22,
+                               r=0.03 * s)
+                if cyc < 1.0:
+                    # lines appear one by one
+                    lines = 4
+                    lh = inner / (lines * 1.9)
+                    for i in range(lines):
+                        ls = i * 0.25
+                        if cyc < ls:
+                            continue
+                        wfrac = min((cyc - ls) / 0.22, 1.0)
+                        self._fill(cr, ix + 0.12 * inner,
+                                   iy + (0.16 + i * 0.2) * inner,
+                                   0.76 * inner * wfrac, lh, 0.92, r=2)
+                elif cyc < 1.45:
+                    # lines condense into a solid square
+                    fp = (cyc - 1.0) / 0.45
+                    self._fill(cr, ix, iy, inner, inner, 0.25 + 0.7 * fp,
+                               r=0.03 * s)
+                elif cyc < 1.85:
+                    # solid, then slides away to the left
+                    fp = (cyc - 1.45) / 0.4
+                    fp = 1 - (1 - fp) ** 2
+                    nx = ix - (ix - (x + 0.10 * s)) * fp
+                    self._fill(cr, nx, iy, inner, inner, 0.95 - 0.73 * fp,
+                               r=0.03 * s)
+                else:
+                    # filed away; a fresh page is about to start
+                    self._fill(cr, ix, iy, inner, inner, 0.10, r=0.03 * s)
 
     # ---------------- window & terminal ----------------
     def build():
@@ -1547,6 +1736,22 @@ def run_gui(project_arg: str | None) -> int:
             "trail": ({"state": "tool_running", "tool": "web_search",
                        "activity": "Searching the web for overlay examples",
                        "files": []}, None),
+            "compile": ({"state": "tool_running", "tool": "bash",
+                         "command": "cargo build --release",
+                         "activity": "bash: cargo build --release",
+                         "files": []}, "core"),
+            "link": ({"state": "tool_running", "tool": "bash",
+                      "command": "ld -o pulseboard main.o engine.o",
+                      "activity": "bash: ld -o pulseboard main.o engine.o",
+                      "files": []}, "core"),
+            "copy": ({"state": "tool_running", "tool": "bash",
+                      "command": "cp -r assets/ dist/assets/",
+                      "activity": "bash: cp -r assets/ dist/assets/",
+                      "files": []}, "storage"),
+            "install": ({"state": "tool_running", "tool": "bash",
+                         "command": "pip install tenacity",
+                         "activity": "bash: pip install tenacity",
+                         "files": []}, "storage"),
         }
         m, comp_name = mocks.get(MOCK, mocks["idle"])
         agent.update(base)

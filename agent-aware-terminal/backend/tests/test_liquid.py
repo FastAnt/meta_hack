@@ -163,3 +163,23 @@ class SessionDiffTests(unittest.TestCase):
             self.assertIn("created.py", files)
             self.assertEqual(files["created.py"]["add"], 3)
             self.assertNotIn("dirty.py", files)  # untouched this session
+
+
+class ModeClassificationTests(unittest.TestCase):
+    def test_bash_command_modes(self):
+        native = _load_native()
+        m = native.mode_for_agent
+        self.assertEqual(m({"state": "tool_running", "tool": "bash",
+                            "command": "cargo build --release"}), "compile")
+        self.assertEqual(m({"state": "tool_running", "tool": "bash",
+                            "command": "pip install tenacity"}), "install")
+        self.assertEqual(m({"state": "tool_running", "tool": "bash",
+                            "command": "cp -r assets/ dist/"}), "copy")
+        self.assertEqual(m({"state": "tool_running", "tool": "bash",
+                            "command": "ld -o app main.o"}), "link")
+        self.assertEqual(m({"state": "tool_running", "tool": "bash",
+                            "command": "python -m pytest -q"}), "compile")
+        self.assertEqual(m({"state": "tool_running", "tool": "bash",
+                            "command": "ls -la"}), "build")
+        self.assertEqual(m({"state": "tool_running", "tool": "web_fetch",
+                            "command": None}), "trail")

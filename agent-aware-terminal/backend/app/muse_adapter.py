@@ -75,7 +75,7 @@ class MuseAdapter(threading.Thread):
             "activity": "", "tool": None, "files": [], "plan": [],
             "source": "agent_event", "timestamp": _now(),
             "active_subagents": 0, "model": None, "task": "",
-            "last_reply": "",
+            "last_reply": "", "command": None,
         }
         self._stop = threading.Event()
         self._message_pending = False
@@ -136,10 +136,12 @@ class MuseAdapter(threading.Thread):
         # diagnostic records otherwise reset the UI to generic work).
         if "tool" not in ev:
             ev["tool"] = self.state.get("tool")
+        if "command" not in ev:
+            ev["command"] = self.state.get("command")
         if "files" not in ev:
             ev["files"] = self.state.get("files") or []
         self.state.update({k: ev[k] for k in
-                           ("state", "activity", "tool", "files")
+                           ("state", "activity", "tool", "files", "command")
                            if k in ev})
         if "plan" in ev:
             self.state["plan"] = ev["plan"]
@@ -180,7 +182,8 @@ class MuseAdapter(threading.Thread):
             return
 
         if pt == "tool_batch.effect.terminal":
-            self._emit(state="working", tool=None, activity="Tool finished")
+            self._emit(state="working", tool=None, command=None,
+                       activity="Tool finished")
             return
 
         if pt == "approval_wait.effect.started":
@@ -230,9 +233,18 @@ class MuseAdapter(threading.Thread):
                 files = _extract_files(args)
                 if name == "write_todos":
                     continue
+                command = None
+                descr = ""
+                try:
+                    parsed = json.loads(args) if args.startswith("{") else {}
+                    command = parsed.get("command")
+                    descr = parsed.get("description") or ""
+                except Exception:
+                    pass
+                shown = descr or (files[0] if files else command or args)
                 self._emit(state=TOOL_STATE.get(name, "tool_running"),
-                           tool=name, files=files,
-                           activity=f"{name}: {_short(files[0] if files else args, 110)}")
+                           tool=name, files=files, command=command,
+                           activity=f"{name}: {_short(shown, 110)}")
         elif kind == "assistant_message_committed":
             # An assistant message is not by itself a request for the
             # user: keep the current state, only refresh the activity.
