@@ -378,45 +378,106 @@ def status_view(agent: dict, comp: dict | None):
             "Start Muse in the terminal — its work will appear here")
 
 
-CSS = b"""
-window { background: #10151b; }
-headerbar { background: #10151b; color: #e9edf0; border-bottom: 1px solid rgba(255,255,255,0.08); }
-headerbar .subtitle { color: #96a4ad; font-size: 11px; }
-.veil { background: linear-gradient(to bottom, rgba(16,21,27,0.55), rgba(16,21,27,0.05) 22%, rgba(16,21,27,0.12) 55%, rgba(16,21,27,0.93) 92%); }
-.ov-project { color: #f2f6f8; font-size: 15px; font-weight: 600; }
-.ov-mode { color: #8cc8be; font-size: 10px; font-weight: 700; letter-spacing: 2px; }
-.ov-mode.attention { color: #e8b26a; }
-.ov-mode.done { color: #9fd6a8; }
-.ov-mode.failed { color: #e88a7a; }
-button.term-return { color: #f2f6f8; background: rgba(16,21,27,0.6); border: 1px solid rgba(255,255,255,0.22); border-radius: 999px; padding: 6px 15px; font-size: 13px; }
-button.term-return:hover { border-color: #8cc8be; color: #8cc8be; }
-button.term-return.attention { border-color: #e8b26a; color: #e8b26a; }
-.status-kicker { color: #8cc8be; font-size: 10px; font-weight: 700; letter-spacing: 2.5px; }
-.status-kicker.attention { color: #e8b26a; }
-.status-kicker.done { color: #9fd6a8; }
-.status-kicker.failed { color: #e88a7a; }
-.status-title { color: #f2f6f8; font-size: 30px; font-weight: 600; }
-.status-sub { color: #b9c6cd; font-size: 14px; }
-.status-plan { color: #8fa0aa; font-size: 12px; }
-progressbar trough { background: rgba(255,255,255,0.14); min-height: 2px; border-radius: 2px; border: none; }
-progressbar progress { background: #8cc8be; min-height: 2px; border-radius: 2px; border: none; }
-.insight-kind { color: #96a4ad; font-size: 10px; font-weight: 700; letter-spacing: 2.5px; }
-.insight-count { color: #71828d; font-size: 10px; }
-.insight-title { color: #eef4f6; font-size: 16px; font-weight: 600; }
-.insight-body { color: #c8d3d9; font-size: 14px; }
-.insight-why { color: #96a4ad; font-size: 12px; }
-button.quiet { color: #c8d3d9; background: transparent; border: 1px solid transparent; border-radius: 6px; font-size: 13px; padding: 5px 9px; }
-button.quiet:hover { border-color: rgba(255,255,255,0.25); color: #ffffff; }
-button.quiz { color: #dfe8ec; background: rgba(16,21,27,0.5); border: 1px solid rgba(255,255,255,0.16); border-radius: 8px; padding: 6px 10px; font-size: 13px; }
-button.quiz.correct { border-color: #9fd6a8; color: #9fd6a8; }
-button.quiz.wrong { border-color: #e88a7a; color: #e88a7a; }
-button.pin { background: rgba(255,255,255,0.65); border: none; border-radius: 999px; min-width: 8px; min-height: 8px; padding: 0; box-shadow: 0 0 8px rgba(0,0,0,0.6); }
-button.pin.active { background: #8cc8be; min-width: 13px; min-height: 13px; box-shadow: 0 0 0 6px rgba(140,200,190,0.25), 0 0 26px #8cc8be; }
-.pin-label { color: #eef4f6; font-size: 11px; font-weight: 600; text-shadow: 0 1px 6px rgba(0,0,0,0.9); }
-.panel { background: #19212a; color: #e9edf0; border-left: 1px solid rgba(255,255,255,0.09); }
-.panel textview, .panel textview text { background: #10151b; color: #c8d3d9; font-family: monospace; font-size: 11px; }
-.panel entry { background: #10151b; color: #e9edf0; }
-"""
+# ---------------------------------------------------------------------------
+# Minimal overlay: system-theme surfaces, grotesk type, one animated square.
+# The square is the agent-activity indicator (field-guide modes):
+#   blinky   idle / done / no agent connected
+#   glitch   searching the local system (files, code, processes)
+#   trail    searching the web
+#   shuffle  the agent needs the user - click returns to the terminal
+#   flash    thinking / planning ("color flash")
+#   build    writing code or files, running builds and tests ("build on")
+# ---------------------------------------------------------------------------
+
+PALETTES = {
+    "dark": {  # Linear-style tokens (see README design notes)
+        "bg": "#08090a", "surface": "#141516", "surface2": "#1c1c1f",
+        "border": "#23252a", "border2": "#34343a",
+        "text": "#f7f8f8", "body": "#d0d6e0", "muted": "#8a8f98",
+        "faint": "#62666d", "square": (0.969, 0.973, 0.973),
+        "vte_bg": (0.031, 0.035, 0.039), "vte_fg": (0.816, 0.839, 0.878),
+    },
+    "light": {
+        "bg": "#f7f8f8", "surface": "#ffffff", "surface2": "#eef0f2",
+        "border": "#e4e5e9", "border2": "#d3d7dd",
+        "text": "#0b0c0e", "body": "#34343a", "muted": "#62666d",
+        "faint": "#8a8f98", "square": (0.078, 0.082, 0.09),
+        "vte_bg": (0.969, 0.973, 0.973), "vte_fg": (0.11, 0.11, 0.12),
+    },
+}
+
+GROTESK = "'Inter', 'Manrope', 'Helvetica Neue', sans-serif"
+MONO = "'JetBrains Mono', 'Berkeley Mono', monospace"
+
+
+def build_css(dark: bool) -> bytes:
+    p = PALETTES["dark" if dark else "light"]
+    return f"""
+.scene {{ background: {p['bg']}; }}
+.ov-project {{ color: {p['text']}; font-family: {GROTESK}; font-size: 15px; font-weight: 600; letter-spacing: -0.15px; }}
+.mode-agent {{ color: {p['muted']}; font-family: {MONO}; font-size: 10px; letter-spacing: 2.5px; }}
+button.term-return {{ color: {p['text']}; background: transparent; border: 1px solid {p['text']}; border-radius: 9999px; padding: 7px 16px; font-family: {GROTESK}; font-size: 13px; font-weight: 500; }}
+button.term-return:hover {{ background: {p['surface2']}; }}
+button.quiet {{ color: {p['muted']}; background: transparent; border: none; font-family: {GROTESK}; font-size: 15px; padding: 4px 8px; }}
+button.quiet:hover {{ color: {p['text']}; }}
+.mode-label {{ color: {p['muted']}; font-family: {MONO}; font-size: 11px; letter-spacing: 3px; }}
+.mode-title {{ color: {p['text']}; font-family: {GROTESK}; font-size: 24px; font-weight: 500; letter-spacing: -0.3px; }}
+.mode-sub {{ color: {p['muted']}; font-family: {GROTESK}; font-size: 14px; }}
+.hint {{ color: {p['faint']}; font-family: {GROTESK}; font-size: 12px; }}
+.panel {{ background: {p['surface']}; color: {p['body']}; border-left: 1px solid {p['border']}; }}
+.panel textview, .panel textview text {{ background: {p['bg']}; color: {p['body']}; font-family: {MONO}; font-size: 11px; }}
+.panel entry {{ background: {p['bg']}; color: {p['text']}; }}
+""".encode()
+
+
+MODE_CAPTIONS = {
+    "blinky": ("BLINKY", "Idle"),
+    "glitch": ("GLITCH", "Searching the system"),
+    "trail": ("TRAIL", "Searching the web"),
+    "shuffle": ("SHUFFLE", "The agent needs you"),
+    "flash": ("COLOR FLASH", "Thinking"),
+    "build": ("BUILD ON", "Writing code"),
+}
+
+
+def mode_for_agent(agent: dict) -> str:
+    """Map the normalized agent state/tool to a square animation mode."""
+    import re
+    st = agent.get("state") or "idle"
+    if st == "awaiting_user":
+        return "shuffle"
+    if st in ("planning", "starting"):
+        return "flash"
+    if st in ("working", "tool_running"):
+        text = f"{agent.get('tool') or ''} {agent.get('activity') or ''}".lower()
+        if re.search(r"web|internet|https?://|\burl\b|fetch", text) \
+                and "file" not in text:
+            return "trail"
+        if re.search(r"search|grep|glob|find|read|list|scan", text):
+            return "glitch"
+        return "build"
+    return "blinky"
+
+
+def ensure_inter_font():
+    """Register the bundled Inter (grotesk) with fontconfig, once."""
+    import subprocess
+    try:
+        src = RES_ROOT / "desktop" / "fonts" / "Inter.ttf"
+        if not src.is_file():
+            src = RES_ROOT / "fonts" / "Inter.ttf"
+        if not src.is_file():
+            return
+        dst_dir = Path.home() / ".local" / "share" / "fonts" / "agent-aware-terminal"
+        dst = dst_dir / "Inter.ttf"
+        if not dst.is_file():
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
+            subprocess.run(["fc-cache", "-f", str(dst_dir)],
+                           capture_output=True, timeout=30)
+    except Exception:
+        pass
+
 
 MOCK = os.environ.get("AAT_MOCKSTATE", "")
 
@@ -431,8 +492,18 @@ def run_gui(project_arg: str | None) -> int:
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_inter_font()
+    _settings = Gtk.Settings.get_default()
+    _theme = ((_settings.get_property("gtk-theme-name") or "").lower()
+              if _settings else "")
+    _prefer_dark = (_settings.get_property("gtk-application-prefer-dark-theme")
+                    if _settings else False)
+    _env_theme = os.environ.get("AAT_THEME", "").lower()
+    DARK = _env_theme == "dark" or (
+        _env_theme != "light" and (_prefer_dark or "dark" in _theme))
+    PAL = PALETTES["dark" if DARK else "light"]
     provider = Gtk.CssProvider()
-    provider.load_from_data(CSS)
+    provider.load_from_data(build_css(DARK))
     Gtk.StyleContext.add_provider_for_screen(
         Gdk.Screen.get_default(), provider,
         Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
@@ -444,9 +515,148 @@ def run_gui(project_arg: str | None) -> int:
     app = Gtk.Application(application_id="dev.meta.agentawareterminal",
                           flags=Gio.ApplicationFlags.FLAGS_NONE)
     S: dict = {"win": None, "overlay_on": False, "panel_on": False,
-               "pin_sig": "", "insight_sig": "", "insight_idx": 0,
-               "cards_cache": [], "quiz": {}, "selected_comp": None,
-               "settings": {"autoshow": True, "threshold": 5}}
+               "mode": "blinky"}
+
+    # ---------------- animated agent square ----------------
+    class AgentSquare(Gtk.DrawingArea):
+        """One square, six calm animations (see mode_for_agent)."""
+
+        def __init__(self):
+            super().__init__()
+            self.mode = "blinky"
+            self.t = 0.0
+            self._timer = None
+            self.set_size_request(280, 280)
+            self.connect("draw", self._draw)
+
+        def set_mode(self, mode):
+            if mode != self.mode:
+                self.mode = mode
+                self.queue_draw()
+
+        def start(self):
+            if self._timer is None:
+                self._timer = GLib.timeout_add(33, self._step)
+
+        def stop(self):
+            if self._timer is not None:
+                GLib.source_remove(self._timer)
+                self._timer = None
+
+        def _step(self):
+            self.t += 0.033
+            self.queue_draw()
+            return True
+
+        # -- drawing helpers --
+        def _rr(self, cr, x, y, w, h, r):
+            import math
+            cr.new_path()
+            cr.arc(x + w - r, y + r, r, -math.pi / 2, 0)
+            cr.arc(x + w - r, y + h - r, r, 0, math.pi / 2)
+            cr.arc(x + r, y + h - r, r, math.pi / 2, math.pi)
+            cr.arc(x + r, y + r, r, math.pi, 3 * math.pi / 2)
+            cr.close_path()
+
+        def _fill(self, cr, x, y, w, h, alpha, r=None):
+            self._rr(cr, x, y, w, h, (0.045 * w) if r is None else r)
+            cr.set_source_rgba(*PAL["square"], alpha)
+            cr.fill()
+
+        def _draw(self, _w, cr):
+            import colorsys
+            import math
+            import random
+            alloc = self.get_allocation()
+            S = float(min(alloc.width, alloc.height))
+            if S < 10:
+                return False
+            m = 0.03 * S
+            x = (alloc.width - S) / 2 + m
+            y = (alloc.height - S) / 2 + m
+            s = S - 2 * m
+            t = self.t
+            mode = self.mode
+            if mode == "blinky":
+                phase = t % 3.4
+                sy = 1.0
+                if phase < 0.22:  # a calm blink
+                    sy = max(0.1, abs(phase - 0.11) / 0.11)
+                self._fill(cr, x, y + s * (1 - sy) / 2, s, s * sy, 0.92)
+            elif mode == "glitch":
+                self._fill(cr, x, y, s, s, 0.16)
+                active = (t % 1.6) < 0.22
+                rng = random.Random(int(t * 9) if active else 0)
+                rows = 6
+                for i in range(rows):
+                    off = (rng.uniform(-0.09, 0.09) * s) if active else 0.0
+                    yy = y + s * i / rows
+                    self._fill(cr, x + off, yy + 1, s, s / rows - 2,
+                               0.55 + 0.35 * rng.random(), r=2)
+            elif mode == "trail":
+                w2 = 0.52 * s
+                for k in range(6, -1, -1):
+                    tt = t - k * 0.085
+                    cx = x + s / 2 + 0.21 * s * math.sin(tt * 1.25)
+                    cy = y + s / 2 + 0.17 * s * math.sin(tt * 1.65 + 1.0)
+                    self._fill(cr, cx - w2 / 2, cy - w2 / 2, w2, w2,
+                               0.10 + 0.13 * (6 - k) if k else 0.95)
+            elif mode == "shuffle":
+                cell = 0.47 * s
+                gap = s - 2 * cell
+                base = [(x, y), (x + cell + gap, y),
+                        (x, y + cell + gap), (x + cell + gap, y + cell + gap)]
+                order = [(0, 1, 2, 3), (1, 0, 3, 2),
+                         (1, 3, 0, 2), (3, 2, 1, 0)][int(t / 0.85) % 4]
+                frac = min((t % 0.85) / 0.3, 1.0)
+                ease = 1 - (1 - frac) ** 3
+                prev = [(0, 1, 2, 3), (1, 0, 3, 2),
+                        (1, 3, 0, 2), (3, 2, 1, 0)][(int(t / 0.85) - 1) % 4]
+                pos = {}
+                for tile in range(4):
+                    a = base[prev.index(tile)]
+                    b = base[order.index(tile)]
+                    pos[tile] = (a[0] + (b[0] - a[0]) * ease,
+                                 a[1] + (b[1] - a[1]) * ease)
+                pulse = 0.75 + 0.2 * math.sin(t * 2.4)
+                for tile in range(4):
+                    px, py = pos[tile]
+                    self._fill(cr, px, py, cell, cell, pulse, r=0.03 * s)
+                self._rr(cr, x - 0.02 * s, y - 0.02 * s,
+                         s + 0.04 * s, s + 0.04 * s, 0.05 * s)
+                cr.set_source_rgba(*PAL["square"], 0.25 + 0.15 * math.sin(t * 2.4))
+                cr.set_line_width(1.5)
+                cr.stroke()
+            elif mode == "flash":
+                hue = (t * 0.045) % 1.0
+                r, g, b = colorsys.hsv_to_rgb(hue, 0.42, 0.88)
+                self._rr(cr, x, y, s, s, 0.045 * s)
+                cr.set_source_rgba(r, g, b, 0.28 + 0.1 * math.sin(t * 1.8))
+                cr.fill()
+                self._rr(cr, x, y, s, s, 0.045 * s)
+                cr.set_source_rgba(r, g, b, 0.9)
+                cr.set_line_width(max(2.0, 0.012 * s))
+                cr.stroke()
+                inner = 0.36 * s
+                self._rr(cr, x + (s - inner) / 2, y + (s - inner) / 2,
+                         inner, inner, 0.04 * s)
+                cr.set_source_rgba(r, g, b, 0.55 + 0.3 * math.sin(t * 1.8))
+                cr.fill()
+            else:  # build
+                self._rr(cr, x, y, s, s, 0.045 * s)
+                cr.set_source_rgba(*PAL["square"], 0.35)
+                cr.set_line_width(1.5)
+                cr.stroke()
+                cells = 4
+                cw = s / cells
+                filled = int(((t % 3.6) / 3.6) * cells * cells + 0.999)
+                for i in range(cells * cells):
+                    col = i % cells
+                    row = cells - 1 - (i // cells)  # build bottom-up
+                    alpha = 0.92 if i < filled else 0.07
+                    self._fill(cr, x + col * cw + 2, y + row * cw + 2,
+                               cw - 4, cw - 4, alpha, r=3)
+            return False
 
     # ---------------- window & terminal ----------------
     def build():
@@ -471,9 +681,7 @@ def run_gui(project_arg: str | None) -> int:
         menu = Gio.Menu()
         menu.append("Open project…", "app.open-project")
         menu.append("Run Muse with a task", "app.muse-task")
-        menu.append("Enrich · Muse Spark", "app.enrich")
         menu.append("History & diagnostics", "app.panel")
-        menu.append("Session poster · Muse Image", "app.poster")
         menu.append("Simulate events (dev)", "app.simulate")
         menu.append("Quit", "app.quit")
         menubtn = Gtk.MenuButton()
@@ -487,8 +695,8 @@ def run_gui(project_arg: str | None) -> int:
         vte.set_scrollback_lines(6000)
         from gi.repository import Pango
         vte.set_font(Pango.FontDescription("Monospace 11"))
-        vte.set_color_background(Gdk.RGBA(0.043, 0.063, 0.082, 1))
-        vte.set_color_foreground(Gdk.RGBA(0.84, 0.88, 0.91, 1))
+        vte.set_color_background(Gdk.RGBA(*PAL["vte_bg"], 1))
+        vte.set_color_foreground(Gdk.RGBA(*PAL["vte_fg"], 1))
         scrolled = Gtk.ScrolledWindow()
         scrolled.add(vte)
         S["vte"] = vte
@@ -498,135 +706,71 @@ def run_gui(project_arg: str | None) -> int:
         overlay.add(scrolled)
         win.add(overlay)
 
-        # ---- overlay scene (native widgets over the terminal) ----
-        S["world_img"] = Gtk.Image()
-        S["world_img"].set_hexpand(True)
-        S["world_img"].set_vexpand(True)
-        world_layer = Gtk.Overlay()
-        world_layer.add(S["world_img"])
-        veil = Gtk.Box()
-        veil.get_style_context().add_class("veil")
-        veil.set_hexpand(True)
-        veil.set_vexpand(True)
-        world_layer.add_overlay(veil)
-        S["pins_fixed"] = Gtk.Fixed()
-        S["pins_fixed"].set_hexpand(True)
-        S["pins_fixed"].set_vexpand(True)
-        world_layer.add_overlay(S["pins_fixed"])
-        # content column over the scene
-        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        content.set_hexpand(True)
-        content.set_vexpand(True)
-        top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        top.set_margin_top(14)
-        top.set_margin_start(20)
-        top.set_margin_end(20)
+        # ---- minimal overlay: system-theme surface + agent square ----
+        scene = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        scene.get_style_context().add_class("scene")
+        scene.set_hexpand(True)
+        scene.set_vexpand(True)
+        atop = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        atop.set_margin_top(14)
+        atop.set_margin_start(20)
+        atop.set_margin_end(20)
         lbl_proj = Gtk.Label(label=core.project["name"] if core.project else "project")
         lbl_proj.get_style_context().add_class("ov-project")
         lbl_proj.set_xalign(0)
-        S["ov_mode"] = Gtk.Label(label="AGENT MODE")
-        S["ov_mode"].get_style_context().add_class("ov-mode")
+        S["mode_agent"] = Gtk.Label(label="AGENT")
+        S["mode_agent"].get_style_context().add_class("mode-agent")
         titlebox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         titlebox.pack_start(lbl_proj, False, False, 0)
-        titlebox.pack_start(S["ov_mode"], False, False, 0)
-        top.pack_start(titlebox, False, False, 0)
-        top.pack_end(btn_return := Gtk.Button(label="↩ Terminal"), False, False, 0)
-        btn_return.get_style_context().add_class("term-return")
-        S["btn_return"] = btn_return
-        btn_return.connect("clicked", lambda *_: set_overlay(False))
+        titlebox.pack_start(S["mode_agent"], False, False, 0)
+        atop.pack_start(titlebox, False, False, 0)
         btn_more = Gtk.Button(label="···")
         btn_more.get_style_context().add_class("quiet")
         btn_more.connect("clicked", lambda *_: toggle_panel(True))
-        top.pack_end(btn_more, False, False, 8)
-        content.pack_start(top, False, False, 0)
-        content.pack_start(Gtk.Box(), True, True, 0)
+        atop.pack_end(btn_more, False, False, 8)
+        btn_return = Gtk.Button(label="\u2190 Terminal")
+        btn_return.get_style_context().add_class("term-return")
+        btn_return.connect("clicked", lambda *_: set_overlay(False))
+        atop.pack_end(btn_return, False, False, 0)
+        scene.pack_start(atop, False, False, 0)
 
-        bottom = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=48)
-        bottom.set_margin_start(20)
-        bottom.set_margin_end(20)
-        bottom.set_margin_bottom(22)
-        status = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=7)
-        S["kicker"] = Gtk.Label(label="AGENT MODE")
-        S["kicker"].get_style_context().add_class("status-kicker")
-        S["kicker"].set_xalign(0)
-        S["title"] = Gtk.Label(label="Waiting for an agent")
-        S["title"].get_style_context().add_class("status-title")
-        S["title"].set_xalign(0)
-        S["sub"] = Gtk.Label(label="")
-        S["sub"].get_style_context().add_class("status-sub")
-        S["sub"].set_xalign(0)
-        S["sub"].set_ellipsize(3)
-        S["bar"] = Gtk.ProgressBar()
-        S["bar"].set_size_request(420, 2)
-        S["plan"] = Gtk.Label(label="")
-        S["plan"].get_style_context().add_class("status-plan")
-        S["plan"].set_xalign(0)
-        for w in (S["kicker"], S["title"], S["sub"], S["bar"], S["plan"]):
-            status.pack_start(w, False, False, 0)
-        bottom.pack_start(status, True, True, 0)
+        center = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=26)
+        center.set_halign(Gtk.Align.CENTER)
+        center.set_valign(Gtk.Align.CENTER)
+        S["square"] = AgentSquare()
+        evbox = Gtk.EventBox()
+        evbox.add(S["square"])
+        evbox.connect("button-press-event", lambda *_: (
+            set_overlay(False) if S["mode"] == "shuffle" else None))
+        center.pack_start(evbox, False, False, 0)
+        captions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=7)
+        S["mode_label"] = Gtk.Label(label="BLINKY")
+        S["mode_label"].get_style_context().add_class("mode-label")
+        S["mode_title"] = Gtk.Label(label="Idle")
+        S["mode_title"].get_style_context().add_class("mode-title")
+        S["mode_sub"] = Gtk.Label(label="")
+        S["mode_sub"].get_style_context().add_class("mode-sub")
+        S["mode_sub"].set_ellipsize(3)
+        for lab in (S["mode_label"], S["mode_title"], S["mode_sub"]):
+            lab.set_halign(Gtk.Align.CENTER)
+            captions.pack_start(lab, False, False, 0)
+        center.pack_start(captions, False, False, 0)
+        scene.pack_start(center, True, True, 0)
 
-        insight = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        insight.set_size_request(400, -1)
-        head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        S["i_kind"] = Gtk.Label(label="PROJECT INSIGHT")
-        S["i_kind"].get_style_context().add_class("insight-kind")
-        S["i_kind"].set_xalign(0)
-        S["i_count"] = Gtk.Label(label="")
-        S["i_count"].get_style_context().add_class("insight-count")
-        head.pack_start(S["i_kind"], True, True, 0)
-        head.pack_end(S["i_count"], False, False, 0)
-        insight.pack_start(head, False, False, 0)
-        S["i_title"] = Gtk.Label(label="")
-        S["i_title"].get_style_context().add_class("insight-title")
-        S["i_title"].set_xalign(0)
-        insight.pack_start(S["i_title"], False, False, 0)
-        S["i_body"] = Gtk.Label(label="")
-        S["i_body"].get_style_context().add_class("insight-body")
-        S["i_body"].set_xalign(0)
-        S["i_body"].set_line_wrap(True)
-        S["i_body"].set_max_width_chars(46)
-        insight.pack_start(S["i_body"], False, False, 0)
-        S["i_opts"] = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        insight.pack_start(S["i_opts"], False, False, 0)
-        S["i_why"] = Gtk.Label(label="")
-        S["i_why"].get_style_context().add_class("insight-why")
-        S["i_why"].set_xalign(0)
-        S["i_why"].set_line_wrap(True)
-        insight.pack_start(S["i_why"], False, False, 0)
-        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        S["btn_save"] = Gtk.Button(label="♡ Save")
-        S["btn_save"].get_style_context().add_class("quiet")
-        S["btn_action"] = Gtk.Button(label="")
-        S["btn_action"].get_style_context().add_class("quiet")
-        S["btn_action"].set_visible(False)
-        S["btn_next"] = Gtk.Button(label="Next →")
-        S["btn_next"].get_style_context().add_class("quiet")
-        S["btn_save"].connect("clicked", lambda *_: on_save())
-        S["btn_action"].connect("clicked", lambda *_: on_action())
-        S["btn_next"].connect("clicked", lambda *_: on_next())
-        actions.pack_start(S["btn_save"], False, False, 0)
-        actions.pack_start(S["btn_action"], False, False, 0)
-        actions.pack_start(S["btn_next"], False, False, 0)
-        insight.pack_start(actions, False, False, 4)
-        bottom.pack_start(insight, False, False, 0)
-        content.pack_start(bottom, False, False, 0)
+        S["hint"] = Gtk.Label(label="")
+        S["hint"].get_style_context().add_class("hint")
+        S["hint"].set_halign(Gtk.Align.CENTER)
+        S["hint"].set_margin_bottom(18)
+        scene.pack_start(S["hint"], False, False, 0)
 
-        scene_layer = Gtk.Overlay()
-        # world at the back, content above; scene becomes the overlay child
-        scene_root = Gtk.Box()
-        scene_root.set_hexpand(True)
-        scene_root.set_vexpand(True)
-        scene_root.pack_start(world_layer, True, True, 0)
-        outer = Gtk.Overlay()
-        outer.add(scene_root)
-        outer.add_overlay(content)
-        content.set_hexpand(True)
-        content.set_vexpand(True)
-        S["scene"] = outer
-        outer.set_visible(False)
-        overlay.add_overlay(outer)
-        # pins live in world_layer's fixed; re-position on resize
-        S["world_layer"] = world_layer
+        def _fit_square(_w, alloc):
+            side = int(min(0.30 * alloc.width, 0.58 * alloc.height))
+            if side > 40 and S["square"].get_size_request().width != side:
+                S["square"].set_size_request(side, side)
+        scene.connect("size-allocate", _fit_square)
+        S["scene"] = scene
+        scene.set_visible(False)
+        overlay.add_overlay(scene)
 
         # ---- side panel: history + diagnostics ----
         panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -669,9 +813,8 @@ def run_gui(project_arg: str | None) -> int:
 
         win.connect("key-press-event", on_key)
         win.show_all()
-        outer.set_visible(False)
+        scene.set_visible(False)
         panel.set_visible(False)
-        core.world_async()
 
         # spawn the shell inside VTE
         def on_spawn(term, pid, error, _data=None):
@@ -696,10 +839,10 @@ def run_gui(project_arg: str | None) -> int:
         S["overlay_on"] = show
         S["scene"].set_visible(show)
         if show:
-            core.world_async()
-            refresh_scene(force=True)
-            refresh_insight(force=True)
+            S["square"].start()
+            tick()
         else:
+            S["square"].stop()
             S["vte"].grab_focus()
 
     def toggle_panel(show=None):
@@ -735,9 +878,6 @@ def run_gui(project_arg: str | None) -> int:
             S["header"].props.subtitle = \
                 core.project["name"] if core.project else ""
             S["vte"].feed_child(f"cd {path}\n".encode())
-            core.world_async()
-            S["cards_cache"] = []
-            refresh_insight(force=True)
         dlg.destroy()
 
     def act_muse_task():
@@ -760,9 +900,7 @@ def run_gui(project_arg: str | None) -> int:
     app.connect("activate", lambda *_: build())
     add_action("open-project", act_open_project)
     add_action("muse-task", act_muse_task)
-    add_action("enrich", lambda: core.enrich_async())
     add_action("panel", lambda: toggle_panel())
-    add_action("poster", lambda: (core.poster_async(), set_overlay(True)))
     add_action("simulate", lambda: core.simulate())
     add_action("quit", lambda: app.quit())
 
@@ -789,6 +927,12 @@ def run_gui(project_arg: str | None) -> int:
                            "activity": "Approval needed: run the project tests"}, "tests"),
             "completed": ({"state": "completed",
                            "activity": "Modules updated, tests pass"}, "storage"),
+            "glitch": ({"state": "tool_running", "tool": "search",
+                        "activity": "Searching the codebase for storage usage",
+                        "files": []}, "core"),
+            "trail": ({"state": "tool_running", "tool": "web_search",
+                       "activity": "Searching the web for overlay examples",
+                       "files": []}, None),
         }
         m, comp_name = mocks.get(MOCK, mocks["idle"])
         agent.update(base)
@@ -801,186 +945,6 @@ def run_gui(project_arg: str | None) -> int:
         return agent, comp
 
     # ---------------- rendering ----------------
-    def refresh_scene(force=False):
-        agent, comp = display_state()
-        # world image (cover-fit)
-        if core.world_path and Path(core.world_path).is_file():
-            try:
-                alloc = S["world_layer"].get_allocation()
-                pb = GdkPixbuf.Pixbuf.new_from_file(str(core.world_path))
-                iw, ih = pb.get_width(), pb.get_height()
-                w = max(alloc.width, 2)
-                h = max(alloc.height, 2)
-                scale = max(w / iw, h / ih)
-                nw, nh = max(int(iw * scale), w), max(int(ih * scale), h)
-                scaled = pb.scale_simple(nw, nh, GdkPixbuf.InterpType.BILINEAR)
-                x = max((nw - w) // 2, 0)
-                y = max((nh - h) // 2, 0)
-                S["world_img"].set_from_pixbuf(
-                    scaled.new_subpixbuf(x, y, w, h))
-            except Exception:
-                import traceback
-                traceback.print_exc()
-        # pins
-        if not core.project:
-            return
-        alloc = S["pins_fixed"].get_allocation()
-        w, h = max(alloc.width, 2), max(alloc.height, 2)
-        comps = core.project["components"][:8]
-        sig = f"{comp['id'] if comp else ''}|{w}x{h}|{len(comps)}"
-        if sig == S["pin_sig"] and not force:
-            return
-        S["pin_sig"] = sig
-        for child in S["pins_fixed"].get_children():
-            S["pins_fixed"].remove(child)
-        import math
-        for i, c in enumerate(comps):
-            angle = (i / max(len(comps), 1)) * 2 * math.pi - math.pi / 2
-            x = int((0.5 + 0.33 * math.cos(angle)) * w)
-            y = int((0.42 + 0.30 * math.sin(angle)) * h)
-            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=7)
-            dot = Gtk.Button()
-            dot.get_style_context().add_class("pin")
-            active = comp and c["id"] == comp["id"]
-            if active:
-                dot.get_style_context().add_class("active")
-            dot.connect("clicked", lambda _b, cid=c["id"]: select_comp(cid))
-            box.pack_start(dot, False, False, 0)
-            if active:
-                lab = Gtk.Label(label=c["name"])
-                lab.get_style_context().add_class("pin-label")
-                box.pack_start(lab, False, False, 0)
-            S["pins_fixed"].put(box, x, y)
-        S["pins_fixed"].show_all()
-
-    def select_comp(cid):
-        S["selected_comp"] = cid
-        S["insight_idx"] = 0
-        refresh_insight(force=True)
-
-    def build_insights():
-        agent, comp = display_state()
-        cards = core.cards()
-        out, seen = [], set()
-
-        def push(item):
-            if item["id"] not in seen:
-                seen.add(item["id"])
-                out.append(item)
-        if agent.get("state") == "completed" and not MOCK:
-            files = core.stats["files_touched"]
-            push({"id": "completed", "kind": "SESSION",
-                  "title": "Session complete",
-                  "body": f"Files touched: {len(files)} · events: {core.stats['events']}",
-                  "action": ("Session poster", "poster")})
-        focus_id = S["selected_comp"] or (comp["id"] if comp else None)
-        by_comp = {}
-        for c in cards:
-            if c.get("component_id"):
-                by_comp.setdefault(c["component_id"], c)
-        if focus_id and core.project:
-            focus = next((c for c in core.project["components"]
-                          if c["id"] == focus_id), None)
-            card = by_comp.get(focus_id)
-            if focus:
-                push({"id": f"focus-{focus_id}",
-                      "kind": "CURRENT COMPONENT" if comp and comp["id"] == focus_id else "COMPONENT",
-                      "title": focus["name"],
-                      "body": card["body"] if card else focus["description"],
-                      "card": card})
-        for c in cards:
-            if c["kind"] == "quiz":
-                push({"id": c["id"], "kind": "QUICK QUESTION", "title": "",
-                      "body": c["body"], "card": c,
-                      "options": c.get("options"),
-                      "answer": c.get("answer_index"), "why": c.get("why")})
-        for c in cards:
-            if c["kind"] == "overview":
-                push({"id": c["id"], "kind": "PROJECT INSIGHT",
-                      "title": c["title"], "body": c["body"], "card": c})
-            elif c["kind"] in ("explanation", "component") and c.get("component_id") != focus_id:
-                push({"id": c["id"], "kind": "PROJECT INSIGHT",
-                      "title": c["title"], "body": c["body"], "card": c})
-        if not out:
-            out = [{"id": "empty", "kind": "PROJECT INSIGHT", "title": "",
-                    "body": "Open a project — facts about its architecture will appear here."}]
-        return out
-
-    def refresh_insight(force=False):
-        items = build_insights()
-        idx = S["insight_idx"] % len(items)
-        cur = items[idx]
-        sig = cur["id"] + str(S["quiz"].get(cur["id"], ""))
-        if sig == S["insight_sig"] and not force:
-            return
-        S["insight_sig"] = sig
-        S["current_insight"] = cur
-        S["i_kind"].set_text(cur["kind"])
-        S["i_count"].set_text(f"{idx + 1} / {len(items)}" if len(items) > 1 else "")
-        S["i_title"].set_text(cur.get("title") or "")
-        S["i_body"].set_text(short(cur.get("body") or "", 260))
-        for ch in S["i_opts"].get_children():
-            S["i_opts"].remove(ch)
-        S["i_why"].set_text("")
-        if cur.get("options"):
-            picked = S["quiz"].get(cur["id"])
-            for i, opt in enumerate(cur["options"]):
-                b = Gtk.Button(label=opt)
-                b.get_style_context().add_class("quiz")
-                if picked is not None:
-                    if i == cur["answer"]:
-                        b.get_style_context().add_class("correct")
-                    elif i == picked:
-                        b.get_style_context().add_class("wrong")
-                b.connect("clicked", lambda _b, i=i, cid=cur["id"]:
-                          (S["quiz"].__setitem__(cid, i), refresh_insight(force=True)))
-                S["i_opts"].pack_start(b, False, False, 0)
-            if picked is not None:
-                S["i_why"].set_text(cur.get("why") or "")
-            S["i_opts"].show_all()
-        act = cur.get("action")
-        S["btn_action"].set_visible(bool(act))
-        if act:
-            S["btn_action"].set_label(act[0])
-        S["items_len"] = len(items)
-
-    def on_save():
-        cur = S.get("current_insight") or {}
-        card = cur.get("card") or {
-            "id": cur.get("id", "insight"), "kind": "insight",
-            "title": cur.get("title") or cur.get("kind", ""),
-            "body": cur.get("body", "")}
-        core.store.save(card)
-        toast("Saved")
-
-    def on_action():
-        cur = S.get("current_insight") or {}
-        act = cur.get("action")
-        if act and act[1] == "poster":
-            core.poster_async()
-
-    def on_next():
-        n = S.get("items_len", 1)
-        if n > 1:
-            S["insight_idx"] = (S["insight_idx"] + 1) % n
-            S["insight_sig"] = ""
-            refresh_insight(force=True)
-
-    toast_win = {"w": None}
-    def toast(text):
-        if toast_win["w"] is not None:
-            toast_win["w"].destroy()
-        w = Gtk.Window(type=Gtk.WindowType.POPUP)
-        lab = Gtk.Label(label=text)
-        lab.set_margin_top(8); lab.set_margin_bottom(8)
-        lab.set_margin_start(16); lab.set_margin_end(16)
-        w.add(lab)
-        w.set_position(Gtk.WindowPosition.CENTER_ON_PARENT)
-        w.set_transient_for(S["win"])
-        w.show_all()
-        toast_win["w"] = w
-        GLib.timeout_add(2400, lambda: (w.destroy(), False)[1])
-
     def refresh_panel():
         lines = []
         for ev in list(core.timeline)[:30]:
@@ -1004,88 +968,40 @@ def run_gui(project_arg: str | None) -> int:
             f"Process tree:\n{tree or '—'}")
 
     def tick():
-        agent, comp = display_state()
-        mode, kicker, title, sub = status_view(agent, comp)
+        agent, _comp = display_state()
         S["pill"].set_text(f"● {agent.get('agent') or 'agent'} · {agent.get('state')}")
-        # autoshow (TZ: keep the user in context on long agent runs)
+        # autoshow: keep the user in context on long agent runs
         if S["set_autoshow"].get_active() and not S["overlay_on"]:
             if agent.get("state") in BUSY and core.working_since \
                     and time.time() - core.working_since >= S["set_threshold"].get_value():
                 set_overlay(True)
         if S["overlay_on"]:
-            S["kicker"].set_text(kicker)
-            for cls in ("attention", "done", "failed"):
-                S["kicker"].get_style_context().remove_class(cls)
-                S["ov_mode"].get_style_context().remove_class(cls)
-            if mode != "busy":
-                S["kicker"].get_style_context().add_class(mode)
-                S["ov_mode"].get_style_context().add_class(mode)
-            S["ov_mode"].set_text(
-                "NEEDS ATTENTION" if mode == "attention"
-                else "COMPLETED" if mode == "done"
-                else "FAILED" if mode == "failed" else "AGENT MODE")
-            ctx = S["btn_return"].get_style_context()
-            ctx.remove_class("attention")
-            if mode == "attention":
-                ctx.add_class("attention")
-            if S["title"].get_text() != title:
-                S["title"].set_text(title)
-            S["sub"].set_text(sub)
-            plan = agent.get("plan") or []
-            if plan:
-                done = sum(1 for p in plan
-                           if p.get("status") in ("completed", "done"))
-                S["bar"].set_fraction(done / len(plan))
-                cur = next((p for p in plan
-                            if p.get("status") == "in_progress"), None)
-                S["plan"].set_text(
-                    f"Step {plan.index(cur) + 1} of {len(plan)} · {cur['text']}"
-                    if cur else f"Steps: {len(plan)} · done {done}")
-            elif agent.get("state") in BUSY:
-                S["bar"].pulse()
-                S["plan"].set_text("")
-            else:
-                S["bar"].set_fraction(
-                    1.0 if agent.get("state") == "completed" else 0.0)
-                S["plan"].set_text("")
-            refresh_scene()
-            refresh_insight()
-            if core.poster_status == "ready" and core.poster_path \
-                    and not S.get("poster_shown"):
-                S["poster_shown"] = True
-                show_poster()
-        if core.enrich_status == "ready" and not S.get("enrich_seen"):
-            S["enrich_seen"] = True
-            S["insight_sig"] = ""
-            refresh_insight(force=True)
+            mode = mode_for_agent(agent)
+            S["mode"] = mode
+            S["square"].set_mode(mode)
+            label, title = MODE_CAPTIONS[mode]
+            st = agent.get("state")
+            if st == "completed":
+                title = "Done"
+            elif st == "failed":
+                title = "Failed"
+            elif st == "idle" and not agent.get("agent"):
+                title = "Waiting for an agent"
+            S["mode_label"].set_text(label)
+            if S["mode_title"].get_text() != title:
+                S["mode_title"].set_text(title)
+            busy = st in BUSY or st in ("awaiting_user", "completed", "failed")
+            S["mode_sub"].set_text(
+                short(pretty_activity(agent), 90) if busy else "")
+            S["mode_agent"].set_text(
+                (agent.get("agent") or "NO AGENT").upper())
+            S["hint"].set_text(
+                "Click the square to return to the terminal"
+                if mode == "shuffle"
+                else "Esc \u2014 back to the terminal \u00b7 Ctrl+Shift+O")
+            if S["panel_on"]:
+                refresh_panel()
         return True
-
-    def show_poster():
-        dlg = Gtk.Dialog(title="Session poster", parent=S["win"])
-        dlg.set_default_size(560, -1)
-        box = dlg.get_content_area()
-        try:
-            pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(
-                str(core.poster_path), 520, 360, True)
-            box.add(Gtk.Image.new_from_pixbuf(pb))
-        except Exception:
-            pass
-        files = core.stats["files_touched"]
-        lab = Gtk.Label(label=f"{core.project['name']} · files touched: {len(files)}"
-                              f" · events: {core.stats['events']}")
-        lab.set_margin_top(8)
-        box.add(lab)
-        dlg.add_button("Save PNG", 1)
-        dlg.add_button("Close", Gtk.ResponseType.CLOSE)
-        if dlg.run() == 1:
-            out = DATA_DIR / "agent-session-poster.png"
-            try:
-                pb2 = GdkPixbuf.Pixbuf.new_from_file(str(core.poster_path))
-                pb2.savev(str(out), "png", [], [])
-                toast(f"Saved: {out}")
-            except Exception:
-                pass
-        dlg.destroy()
 
     return app.run([sys.argv[0]])
 

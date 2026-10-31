@@ -5,7 +5,7 @@ waiting into an interactive map of your project.**
 
 Muse works → Muse Spark explains → Muse Image draws → you stay in context.
 
-![Overlay: a Muse Image project world with the real architecture on top](docs/assets/overlay.png)
+![Overlay: the BUILD ON square on the dark theme surface](docs/assets/state-dark-working.png)
 
 An implementation of phases 1–4 of the
 [spec v0.2](../meta_hack/agent_aware_terminal_tz_v0_2.md) as one working
@@ -48,64 +48,69 @@ for the live scenario.
 2. Menu ☰ → **"Run Muse with a task"** — a real Muse starts in
    this same terminal.
 3. After a few seconds (the threshold is configurable) the overlay opens
-   by itself on top of the terminal: a pixel-art project world by
-   Muse Image, the active component lit by a pin, and one human sentence
-   at the bottom saying what the agent is doing.
-4. One contextual note at a time: Save / Next, plus a Muse Spark quiz
-   (menu ☰ → "Enrich · Muse Spark").
-5. When the agent finishes, the note offers a **"Session poster"**:
-   Muse Image redraws the same world at sunrise (anchored composition).
+   by itself on top of the terminal: a single animated square in the
+   middle of the screen shows what the agent is doing (see the modes
+   below), with one human sentence underneath.
+4. If the agent needs you, the square shuffles — **click it and you are
+   back in the terminal** to answer.
+5. When the agent finishes, the square settles back to a calm blink.
 
 No Muse quota? Menu ☰ → **"Simulate events (dev)"**. History,
 diagnostics and settings live in menu ☰ → "History & diagnostics" (a side
 panel, not part of the main screen).
 
-![Session poster: the same world, sunrise, robot with a flag](docs/assets/poster.webp)
-
 ---
 
-## Design v1.0 — minimal / focus mode
+## Design v2 — the agent square
 
-The overlay follows a minimal design brief: not a dashboard, but a calm
-waiting screen in the spirit of "minimal UI / strong typography / pixel
-world / calm motion":
+The overlay is deliberately almost empty. It follows the system theme
+(dark or light), uses a grotesk typeface (Inter, bundled with the app),
+hairline borders and pill buttons — no generated imagery, no dashboard.
 
-- **No right-hand timeline column** — event history moved to a secondary
-  side panel ("History & diagnostics"), together with diagnostics and
-  settings.
-- **One contextual insight instead of a card row** (PROJECT INSIGHT /
-  CURRENT COMPONENT / QUICK QUESTION) with Save and Next actions.
-  Priority: current component → quiz → overview → other explanations;
-  clicking a component on the scene changes the context.
-- **Quiet pins instead of component plates.** Only the active component
-  gets a label and a soft glow; everything else stays a small dot.
-- Agent status is a human phrase, not a log: `Editing storage`,
-  `Running tests`, `Thinking…`, "The agent needs you", "Done" — plus a
-  thin progress line derived from plan steps (no invented percentages).
-- Tokens: Inter, background `#10151B`, a single accent `#8CC8BE`; the
-  world is muted (saturation .8, vignette, bottom gradient); attention
-  and error states use semantic colors.
+In the center sits **one square, ~30% of the window**, whose animation is
+the whole status display (in the spirit of FUI field-guide glyphs):
+
+| Mode | Animation | Meaning |
+|---|---|---|
+| `BLINKY` | a calm blinking square | idle, done, or no agent connected |
+| `GLITCH` | the square slices and jitters | searching the local system (files, code) |
+| `TRAIL` | the square moves, leaving a trail | searching the web |
+| `SHUFFLE` | four tiles keep swapping | the agent needs you — click the square to return to the terminal |
+| `COLOR FLASH` | the square slowly flashes color | thinking / planning |
+| `BUILD ON` | a 4×4 grid fills bottom-up | writing code or files, running builds/tests |
+
+Under the square: the mode name (mono, letterspaced), one human phrase
+("Writing code") and the current activity in one line. Nothing else. The
+mode is derived from the normalized agent event: `awaiting_user` →
+SHUFFLE, `planning` → COLOR FLASH, search/read tools → GLITCH, web tools
+→ TRAIL, edit/bash tools → BUILD ON, everything else → BLINKY.
+
+Palettes are Linear-style token stacks (dark: `#08090a` canvas, `#f7f8f8`
+text, 1px `#23252a` borders; light: the same roles inverted). The theme is
+read from GTK settings at startup (`AAT_THEME=dark|light` overrides, for
+screenshots). Richer visualization — architecture, plans, generated
+worlds — returns in the next design iteration, once we agree how to show
+more data; the Muse Image / Spark pipelines remain in `Core` meanwhile.
 
 States: [idle](docs/assets/state-idle.png) ·
-[working](docs/assets/state-working.png) ·
-[thinking](docs/assets/state-thinking.png) ·
-[needs attention](docs/assets/state-attention.png).
+[working / BUILD ON](docs/assets/state-working.png) ·
+[thinking / COLOR FLASH](docs/assets/state-thinking.png) ·
+[needs attention / SHUFFLE](docs/assets/state-attention.png) ·
+[GLITCH](docs/assets/mode-glitch.png) · [TRAIL](docs/assets/mode-trail.png) ·
+[dark theme](docs/assets/state-dark-working.png).
 For reproducible screenshots there is a dev env var
-`AAT_MOCKSTATE=idle|working|thinking|attention|completed` — it substitutes
-only the display, not the data.
+`AAT_MOCKSTATE=idle|working|thinking|attention|completed|glitch|trail` —
+it substitutes only the display, not the data.
 
-Known UI limitations: pins are placed on an ellipse and are not bound to
-specific buildings in freshly generated art (binding to image regions is
-the next art-direction step); the app is dark by design, a system light
-theme is not applied yet; panel history is not filtered; the distribution
-is ~550 MB (PyInstaller bundles all GTK typelibs — shrinkable by excluding
-unused ones).
+Known limitations: theme is chosen at startup (no live system-theme
+switching yet); on the `TRAIL`/`GLITCH` distinction the app relies on
+tool names, so an agent that hides its tools degrades to BUILD ON.
 
 ## How the spec phases map to code
 
 | Spec phase | What is implemented | Where |
 |---|---|---|
-| **1. Terminal + overlay** | A real **VTE** terminal widget (the same as in GNOME Terminal): bash/vim/tmux/htop work as usual. The overlay is native GTK widgets over the terminal (`GtkOverlay`), `Ctrl+Shift+O`, auto-show during long agent runs | [native_terminal.py](desktop/native_terminal.py) |
+| **1. Terminal + overlay** | A real **VTE** terminal widget (the same as in GNOME Terminal): bash/vim/tmux/htop work as usual. The overlay is native GTK widgets over the terminal (`GtkOverlay`): a system-theme surface with one animated agent square, `Ctrl+Shift+O`, auto-show during long agent runs | [native_terminal.py](desktop/native_terminal.py) |
 | **2. Session awareness** | `SessionObserver`: foreground process, cmdline, cwd from `/proc`, process tree, agent-CLI detection, command lifecycle. Observations are separated from inferences (source + confidence) | [session_observer.py](backend/app/session_observer.py) |
 | **3. Agent integration** | `MuseAdapter` for Muse: tails its replayable session JSONL log → normalized events of the spec §6.2 contract (`starting/planning/tool_running/awaiting_user/completed/failed`), plan from `write_todos`, files from tool calls, approval waits, subagent counter. Overlay auto-show with an anti-flicker threshold | [muse_adapter.py](backend/app/muse_adapter.py) |
 | **4. Project awareness** | `ProjectContextIndexer`: git root, tree, README, manifests, components and import-derived connections (Python/JS), file→component mapping. Cards: deterministic facts + Muse Spark enrichment (explanations, quiz), card saving. The spec's graphical primitives (`ComponentNode`, `Connection`, `AgentMarker`, `ActivityAnimation`, `InfoCard`, `ProgressElement`) map to pins, the status line and the insight note | [project_indexer.py](backend/app/project_indexer.py), [content.py](backend/app/content.py) |
@@ -138,6 +143,11 @@ diagram" would be a fake. Our split is strict:
 The poster is made via `/v1/images/edits` with the world as a reference —
 so the islands on the poster are the same as on the map, only at sunrise
 with confetti.
+
+> Status: worlds and posters are currently **not displayed** — the
+> overlay was reduced to the minimal agent square (Design v2 above) and
+> the data visualization will be redesigned next. The generation code
+> (`Core.world_async`, `Core.poster_async`) remains in place.
 
 ![The project world before the poster](docs/assets/world.webp)
 

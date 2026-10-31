@@ -14,9 +14,11 @@ fi
 .venv-build/bin/pyinstaller --noconfirm --onedir \
   --name agent-aware-terminal --paths . \
   --add-data "demo_project:demo_project" \
+  --add-data "desktop/fonts:desktop/fonts" \
   --hidden-import gi --hidden-import gi.repository.Gtk \
   --hidden-import gi.repository.Gdk --hidden-import gi.repository.Vte \
   --hidden-import gi.repository.GdkPixbuf --hidden-import gi.repository.Pango \
+  --hidden-import cairo --hidden-import gi._gi_cairo \
   --hidden-import gi.repository.GLib --hidden-import gi.repository.Gio \
   --hidden-import backend.app.muse_adapter \
   --hidden-import backend.app.session_observer \
