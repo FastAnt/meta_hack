@@ -78,7 +78,7 @@ script, and known limitations: [agent-aware-terminal/README.md](agent-aware-term
 ![Architecture](agent-aware-terminal/docs/assets/architecture.png)
 
 Explorable diagram with links into the source:
-[`.archify/architecture-agent-aware-terminal-20261031-1215/agent-aware-terminal.html`](.archify/architecture-agent-aware-terminal-20261031-1215/agent-aware-terminal.html)
+[`.archify/architecture-agent-aware-terminal-20261031-1240/agent-aware-terminal.html`](.archify/architecture-agent-aware-terminal-20261031-1240/agent-aware-terminal.html)
 (open in a browser; export to PNG/SVG from its menu).
 
 ## Repository layout

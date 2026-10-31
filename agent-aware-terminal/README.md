@@ -146,7 +146,7 @@ with confetti.
 ![Architecture diagram](docs/assets/architecture.png)
 
 An explorable version with source links lives in the repository root:
-`.archify/architecture-agent-aware-terminal-20261031-1215/agent-aware-terminal.html`.
+`.archify/architecture-agent-aware-terminal-20261031-1240/agent-aware-terminal.html`.
 
 ```text
 ┌───────────────── agent-aware-terminal (single process) ─────────────┐

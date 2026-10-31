@@ -1,0 +1,547 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Agent-Aware Terminal — Architecture",
+    "output": ".archify/architecture-agent-aware-terminal-20261031-1240/agent-aware-terminal.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/FastAnt/meta_hack.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "793a5f0bedc61af13f8dbed7c5f352972d36b557"
+    },
+    "locale": "en"
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "Developer",
+      "sublabel": "commands, approvals",
+      "pos": [
+        30,
+        330
+      ],
+      "size": [
+        140,
+        66
+      ]
+    },
+    {
+      "id": "vte",
+      "type": "frontend",
+      "label": "VTE Terminal",
+      "sublabel": "GTK widget · bash, vim, tmux",
+      "pos": [
+        230,
+        330
+      ],
+      "size": [
+        180,
+        72
+      ],
+      "sources": [
+        {
+          "path": "agent-aware-terminal/desktop/native_terminal.py",
+          "line": 684,
+          "end_line": 692,
+          "label": "shell spawn in VTE"
+        }
+      ]
+    },
+    {
+      "id": "muse_agent",
+      "type": "external",
+      "label": "Muse (muse CLI)",
+      "sublabel": "the agent works in the terminal",
+      "pos": [
+        230,
+        545
+      ],
+      "size": [
+        180,
+        66
+      ]
+    },
+    {
+      "id": "overlay",
+      "type": "frontend",
+      "label": "Overlay (GtkOverlay)",
+      "sublabel": "world, pins, status, one note",
+      "pos": [
+        560,
+        100
+      ],
+      "size": [
+        200,
+        72
+      ],
+      "sources": [
+        {
+          "path": "agent-aware-terminal/desktop/native_terminal.py",
+          "line": 497,
+          "end_line": 505,
+          "label": "GtkOverlay over VTE"
+        }
+      ]
+    },
+    {
+      "id": "core",
+      "type": "backend",
+      "label": "Core",
+      "sublabel": "state · statistics · threads",
+      "pos": [
+        560,
+        320
+      ],
+      "size": [
+        200,
+        88
+      ],
+      "sources": [
+        {
+          "path": "agent-aware-terminal/desktop/native_terminal.py",
+          "line": 61,
+          "end_line": 96,
+          "label": "Core: all logic in-process"
+        }
+      ]
+    },
+    {
+      "id": "muse_logs",
+      "type": "database",
+      "label": "Muse session logs",
+      "sublabel": "~/.local/share/muse/sessions",
+      "pos": [
+        890,
+        545
+      ],
+      "size": [
+        200,
+        66
+      ]
+    },
+    {
+      "id": "metaclient",
+      "type": "backend",
+      "label": "MetaClient",
+      "sublabel": "Meta Model API client",
+      "pos": [
+        1120,
+        100
+      ],
+      "size": [
+        170,
+        72
+      ],
+      "sources": [
+        {
+          "path": "agent-aware-terminal/backend/app/meta_client.py",
+          "line": 28,
+          "end_line": 36,
+          "label": "key from env only"
+        }
+      ]
+    },
+    {
+      "id": "observer",
+      "type": "backend",
+      "label": "SessionObserver",
+      "sublabel": "VTE pty → facts from /proc",
+      "pos": [
+        1090,
+        320
+      ],
+      "size": [
+        170,
+        72
+      ],
+      "sources": [
+        {
+          "path": "agent-aware-terminal/backend/app/session_observer.py",
+          "line": 87,
+          "end_line": 110,
+          "label": "observations from /proc"
+        }
+      ]
+    },
+    {
+      "id": "adapter",
+      "type": "backend",
+      "label": "MuseAdapter",
+      "sublabel": "JSONL tail → AgentEvent",
+      "pos": [
+        1150,
+        545
+      ],
+      "size": [
+        180,
+        66
+      ],
+      "sources": [
+        {
+          "path": "agent-aware-terminal/backend/app/muse_adapter.py",
+          "line": 61,
+          "end_line": 76,
+          "label": "MuseAdapter"
+        },
+        {
+          "path": "agent-aware-terminal/backend/app/muse_adapter.py",
+          "line": 93,
+          "end_line": 106,
+          "label": "session lookup by workspace"
+        }
+      ]
+    },
+    {
+      "id": "indexer",
+      "type": "backend",
+      "label": "ProjectContextIndexer",
+      "sublabel": "components & import connections",
+      "pos": [
+        890,
+        100
+      ],
+      "size": [
+        190,
+        72
+      ],
+      "sources": [
+        {
+          "path": "agent-aware-terminal/backend/app/project_indexer.py",
+          "line": 101,
+          "end_line": 130,
+          "label": "index_project"
+        }
+      ]
+    },
+    {
+      "id": "content",
+      "type": "backend",
+      "label": "ContentProvider",
+      "sublabel": "facts + Muse Spark cards",
+      "pos": [
+        890,
+        320
+      ],
+      "size": [
+        190,
+        72
+      ],
+      "sources": [
+        {
+          "path": "agent-aware-terminal/backend/app/content.py",
+          "line": 17,
+          "end_line": 40,
+          "label": "deterministic cards"
+        },
+        {
+          "path": "agent-aware-terminal/backend/app/content.py",
+          "line": 70,
+          "end_line": 90,
+          "label": "spark_cards"
+        }
+      ]
+    },
+    {
+      "id": "project_fs",
+      "type": "database",
+      "label": "Project on disk",
+      "sublabel": "sources + git",
+      "pos": [
+        1340,
+        100
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "meta_api",
+      "type": "cloud",
+      "label": "Meta Model API",
+      "sublabel": "api.meta.ai/v1",
+      "pos": [
+        1340,
+        320
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "data_store",
+      "type": "database",
+      "label": "Local data",
+      "sublabel": "cache & saved cards",
+      "pos": [
+        560,
+        545
+      ],
+      "size": [
+        200,
+        66
+      ],
+      "sources": [
+        {
+          "path": "agent-aware-terminal/desktop/native_terminal.py",
+          "line": 210,
+          "end_line": 233,
+          "label": "Muse Image world cache"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "agent-aware-terminal — a single process (ELF, PyInstaller)",
+      "wraps": [
+        "vte",
+        "overlay",
+        "core",
+        "observer",
+        "metaclient",
+        "indexer",
+        "content",
+        "adapter"
+      ],
+      "pad": 26
+    },
+    {
+      "kind": "region",
+      "label": "Local machine · Linux / GTK 3",
+      "wraps": [
+        "vte",
+        "overlay",
+        "core",
+        "observer",
+        "metaclient",
+        "indexer",
+        "content",
+        "adapter",
+        "muse_agent",
+        "muse_logs",
+        "project_fs",
+        "data_store"
+      ],
+      "pad": 28
+    }
+  ],
+  "connections": [
+    {
+      "id": "user-input",
+      "from": "user",
+      "to": "vte",
+      "label": "input"
+    },
+    {
+      "id": "vte-shell-agent",
+      "from": "vte",
+      "to": "muse_agent",
+      "label": "shell launches muse",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "core-feed",
+      "from": "core",
+      "to": "vte",
+      "label": "feed_child: muse",
+      "variant": "dashed"
+    },
+    {
+      "id": "core-overlay",
+      "from": "core",
+      "to": "overlay",
+      "label": "tick 280 ms: status, pins, note",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "observer-core",
+      "from": "observer",
+      "to": "core",
+      "label": "snapshot",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "via": [
+        [
+          1175,
+          470
+        ],
+        [
+          660,
+          470
+        ]
+      ]
+    },
+    {
+      "id": "agent-edits",
+      "from": "muse_agent",
+      "to": "project_fs",
+      "label": "reads & edits files",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "right",
+      "via": [
+        [
+          320,
+          760
+        ],
+        [
+          1548,
+          760
+        ],
+        [
+          1548,
+          136
+        ]
+      ]
+    },
+    {
+      "id": "agent-logs",
+      "from": "muse_agent",
+      "to": "muse_logs",
+      "label": "writes JSONL",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "via": [
+        [
+          320,
+          650
+        ],
+        [
+          990,
+          650
+        ]
+      ]
+    },
+    {
+      "id": "logs-adapter",
+      "from": "muse_logs",
+      "to": "adapter",
+      "label": "tail"
+    },
+    {
+      "id": "adapter-core",
+      "from": "adapter",
+      "to": "core",
+      "label": "AgentEvent: state, tool, files, plan",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "via": [
+        [
+          1240,
+          500
+        ],
+        [
+          660,
+          500
+        ]
+      ]
+    },
+    {
+      "id": "project-indexer",
+      "from": "project_fs",
+      "to": "indexer",
+      "label": "file reads",
+      "fromSide": "top",
+      "toSide": "top",
+      "via": [
+        [
+          1425,
+          64
+        ],
+        [
+          985,
+          64
+        ]
+      ]
+    },
+    {
+      "id": "core-indexer",
+      "from": "core",
+      "to": "indexer",
+      "label": "index_project(path)"
+    },
+    {
+      "id": "indexer-content",
+      "from": "indexer",
+      "to": "content",
+      "label": "ArchitectureModel",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "content-core",
+      "from": "content",
+      "to": "core",
+      "label": "cards & quiz"
+    },
+    {
+      "id": "core-meta",
+      "from": "core",
+      "to": "metaclient",
+      "label": "calls in threads"
+    },
+    {
+      "id": "meta-api",
+      "from": "metaclient",
+      "to": "meta_api",
+      "label": "HTTPS · Muse Spark / Muse Image",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          1310,
+          136
+        ],
+        [
+          1310,
+          356
+        ]
+      ]
+    },
+    {
+      "id": "core-data",
+      "from": "core",
+      "to": "data_store",
+      "label": "cache: worlds, posters, saved cards",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Core principle: AI draws — code tells the truth",
+      "items": [
+        "Muse Image generates only the art layer: the world and the poster, no text",
+        "Facts (components, connections, statistics) are computed by code from a real project index",
+        "The poster is an anchored edit of the world: same islands, sunrise and confetti"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Observation is separated from inference",
+      "items": [
+        "SessionObserver: OS facts from /proc (source=observed)",
+        "The 'agent is working' heuristic is marked source=heuristic with confidence",
+        "Exact events come from MuseAdapter reading Muse's own logs (source=agent_event)"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Run it",
+      "items": [
+        "./dist/agent-aware-terminal/agent-aware-terminal — a plain GTK+VTE terminal",
+        "Ctrl+Shift+O or auto-show — the overlay appears during long agent runs",
+        "Menu: project, Muse task, Spark, history, poster; the key comes only from MODEL_API_KEY env"
+      ]
+    }
+  ]
+}
