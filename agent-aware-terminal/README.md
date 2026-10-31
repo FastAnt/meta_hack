@@ -141,9 +141,21 @@ and **split screen** (header Split button or `Ctrl+Shift+S`) — terminal
 on the left, the same visualization on the right, 50/50 with a draggable
 divider. The System-1 gate drives both layouts equally.
 
-Input languages: the app explicitly enables the system IBus input
-method (`GTK_IM_MODULE=ibus`) so keyboard-layout switching and IM
-languages work in the terminal like in any other GTK app.
+Input languages: the app forces the system IBus input method
+(`GTK_IM_MODULE=ibus` + the GTK `gtk-im-module` setting, set before the
+terminal widget exists) so keyboard-layout switching and IM languages
+work in the terminal like in any other GTK app. The active method is
+shown in Diagnostics.
+
+Square states come from the agent's own log (facts first). Two fixes
+matter: the running tool is *sticky* — status/diagnostic records no
+longer wipe it (that made web research render as "writing code") — and
+an interactive turn ends when the agent's reply is followed by a few
+seconds of log silence (interactive sessions emit no `session.end`).
+Where the log only says generic "working" with no tool, **Liquid d1.1
+classifies the activity** (`choice`: thinking / searching_system /
+searching_web / writing_code / waiting_for_user, throttled, cached
+briefly) — System 1 arbitrates exactly the ambiguous moments.
 
 Palettes are Linear-style token stacks (dark: `#08090a` canvas, `#f7f8f8`
 text, 1px `#23252a` borders; light: the same roles inverted). The theme is

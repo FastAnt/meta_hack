@@ -120,6 +120,9 @@ class Core:
                      "last_ask": 0.0}
         self.results: dict | None = None
         self.step_count = 0
+        self.mode_override: dict | None = None
+        self._classify_at = 0.0
+        self._classifying = False
         self._session_key = None
         self._last_state = "idle"
         self._busy_since: float | None = None
@@ -282,6 +285,46 @@ class Core:
                 g["asking"] = False
         threading.Thread(target=_ask, daemon=True).start()
         return g
+
+    # -- System-1 activity classification (ambiguous moments) -------------
+    def classify_tick(self, agent: dict):
+        """When the event stream only says generic "working" (no tool),
+        ask Liquid d1.1 what the agent is actually doing. Facts from the
+        log always win; this only fills the ambiguous gaps, throttled
+        to one call per 6 s, result trusted for 9 s."""
+        if not self.liquid.configured or self._classifying:
+            return
+        if agent.get("state") not in BUSY:
+            return
+        now = time.time()
+        if now - self._classify_at < 6:
+            return
+        self._classify_at = now
+        self._classifying = True
+        state_text = self._gate_state_text(
+            now - (self._busy_since or now)) + \
+            f"\nCurrent activity line: {agent.get('activity') or ''}"
+
+        def _ask():
+            try:
+                out = self.liquid.classify_activity(state_text)
+                if out:
+                    mode = {"thinking": "flash",
+                            "searching_system": "glitch",
+                            "searching_web": "trail",
+                            "writing_code": "build",
+                            "waiting_for_user": "shuffle"}.get(out["choice"])
+                    if mode and not (mode == "shuffle"
+                                     and out["confidence"] < 0.65):
+                        self.mode_override = {
+                            "mode": mode, "at": time.time(),
+                            "choice": out["choice"],
+                            "confidence": out["confidence"]}
+            except Exception:
+                pass
+            finally:
+                self._classifying = False
+        threading.Thread(target=_ask, daemon=True).start()
 
     # -- end-of-session results ------------------------------------------
     def _finish_session(self, final_state: str):
@@ -719,13 +762,13 @@ MOCK = os.environ.get("AAT_MOCKSTATE", "")
 
 
 def run_gui(project_arg: str | None) -> int:
-    # Input method: without GTK_IM_MODULE the frozen app falls back to a
-    # bare context and layout/IBus language switching is lost. Ubuntu
-    # runs IBus (XMODIFIERS=@im=ibus) — enable it explicitly.
-    if not os.environ.get("GTK_IM_MODULE"):
-        import glob as _glob
-        if _glob.glob("/usr/lib/*/gtk-3.0/3.0.0/immodules/im-ibus.so"):
-            os.environ["GTK_IM_MODULE"] = "ibus"
+    # Input method: without IBus the app falls back to a bare context
+    # and layout/language switching is lost. Force IBus when present
+    # (a stray GTK_IM_MODULE from the launching shell must not win).
+    import glob as _glob
+    IBUS_OK = bool(_glob.glob("/usr/lib/*/gtk-3.0/3.0.0/immodules/im-ibus.so"))
+    if IBUS_OK and not os.environ.get("AAT_NO_IBUS"):
+        os.environ["GTK_IM_MODULE"] = "ibus"
     import gi
     gi.require_version("Gtk", "3.0")
     gi.require_version("Gdk", "3.0")
@@ -1004,6 +1047,13 @@ def run_gui(project_arg: str | None) -> int:
             "open-menu-symbolic", Gtk.IconSize.BUTTON))
         menubtn.set_menu_model(menu)
         header.pack_end(menubtn)
+
+        # Belt and suspenders: set the IM module on GTK settings too,
+        # before any widget (VTE creates its IM context at construction).
+        if IBUS_OK and not os.environ.get("AAT_NO_IBUS"):
+            _gs = Gtk.Settings.get_default()
+            if _gs:
+                _gs.set_property("gtk-im-module", "ibus")
 
         # VTE — the terminal itself, exactly like a normal terminal app.
         vte = Vte.Terminal()
@@ -1352,6 +1402,8 @@ def run_gui(project_arg: str | None) -> int:
             f"adapter session: {core.adapter.current_file or 'not attached'}\n"
             f"state (source={agent.get('source', '—')}): {agent.get('state', '—')}\n"
             f"Muse Spark: {core.enrich_status} · Muse Image world: {core.world_status}\n"
+            f"input method: GTK_IM_MODULE={os.environ.get('GTK_IM_MODULE', '—')}"
+            f" · settings={Gtk.Settings.get_default().get_property('gtk-im-module') if Gtk.Settings.get_default() else '—'}\n"
             f"System-1 gate (Liquid): {core.gate.get('source') or 'not asked yet'}"
             f" · decision={core.gate.get('decision')} · p={core.gate.get('p')}"
             f" · steps={core.step_count}"
@@ -1390,6 +1442,14 @@ def run_gui(project_arg: str | None) -> int:
 
         if S["overlay_on"]:
             mode = mode_for_agent(agent)
+            # System-1 fills the gaps: generic "working" with no tool
+            # is ambiguous — d1.1 classifies the real activity.
+            core.classify_tick(agent)
+            ov = core.mode_override
+            ambiguous = not agent.get("tool") or agent.get("state") == "working"
+            if ov and ambiguous and mode in ("build", "blinky") \
+                    and time.time() - ov["at"] < 9:
+                mode = ov["mode"]
             S["mode"] = mode
             S["square"].set_mode(mode)
             label, title = MODE_CAPTIONS[mode]

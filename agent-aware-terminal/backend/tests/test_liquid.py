@@ -107,3 +107,42 @@ class GitChangesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AdapterStateTests(unittest.TestCase):
+    def _adapter(self):
+        from backend.app.muse_adapter import MuseAdapter
+        evs = []
+        return MuseAdapter(evs.append, lambda: ""), evs
+
+    def test_tool_survives_status_events(self):
+        ad, evs = self._adapter()
+        ad._handle_record({"payload_type": "tool_batch.effect.started",
+                           "payload": {"record": {"tool_name": "web_search"}}})
+        ad._handle_record({"payload_type": "runtime.session",
+                           "payload": {"event": {
+                               "kind": "status",
+                               "message": "tool action serialized: parallel eligibility not proven"}}})
+        self.assertEqual(ad.state["tool"], "web_search")
+        self.assertEqual(ad.state["state"], "tool_running")
+
+    def test_tool_cleared_on_terminal(self):
+        ad, evs = self._adapter()
+        ad._handle_record({"payload_type": "tool_batch.effect.started",
+                           "payload": {"record": {"tool_name": "web_search"}}})
+        ad._handle_record({"payload_type": "tool_batch.effect.terminal",
+                           "payload": {}})
+        self.assertIsNone(ad.state["tool"])
+
+    def test_quiet_turn_completion(self):
+        import time as _time
+        from backend.app import muse_adapter as ma
+        ad, evs = self._adapter()
+        ad._handle_record({"payload_type": "runtime.session",
+                           "payload": {"event": {
+                               "kind": "assistant_message_committed",
+                               "text": "All done, here is the summary."}}})
+        ad.state["state"] = "planning"
+        ad._last_record_ts = _time.time() - 10
+        ad._check_quiet()
+        self.assertEqual(ad.state["state"], "completed")

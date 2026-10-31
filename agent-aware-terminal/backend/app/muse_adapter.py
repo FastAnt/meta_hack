@@ -77,6 +77,9 @@ class MuseAdapter(threading.Thread):
             "active_subagents": 0, "model": None, "task": "",
         }
         self._stop = threading.Event()
+        self._message_pending = False
+        self._last_message = ""
+        self._last_record_ts = 0.0
 
     # -- session discovery -------------------------------------------------
     def _workspace_of(self, path: str) -> str | None:
@@ -123,10 +126,17 @@ class MuseAdapter(threading.Thread):
     def _emit(self, **kw):
         ev = {
             "agent": "muse", "session_id": self.state.get("session_id"),
-            "state": "working", "activity": "", "tool": None, "files": [],
+            "state": "working", "activity": "",
             "source": "agent_event", "timestamp": _now(),
         }
         ev.update(kw)
+        # tool/files are sticky: an event that does not mention them must
+        # not wipe the tool that is currently running (status and
+        # diagnostic records otherwise reset the UI to generic work).
+        if "tool" not in ev:
+            ev["tool"] = self.state.get("tool")
+        if "files" not in ev:
+            ev["files"] = self.state.get("files") or []
         self.state.update({k: ev[k] for k in
                            ("state", "activity", "tool", "files")
                            if k in ev})
@@ -149,6 +159,7 @@ class MuseAdapter(threading.Thread):
             return
 
         if pt == "runtime.user_intent.accepted":
+            self._message_pending = False
             text = ""
             for msg in payload.get("model_messages") or []:
                 for part in msg.get("content") or []:
@@ -160,6 +171,7 @@ class MuseAdapter(threading.Thread):
             return
 
         if pt == "tool_batch.effect.started":
+            self._message_pending = False
             record = payload.get("record") or {}
             tool = record.get("tool_name") or "tool"
             self._emit(state="tool_running", tool=tool,
@@ -167,7 +179,7 @@ class MuseAdapter(threading.Thread):
             return
 
         if pt == "tool_batch.effect.terminal":
-            self._emit(state="working", activity="Tool finished")
+            self._emit(state="working", tool=None, activity="Tool finished")
             return
 
         if pt == "approval_wait.effect.started":
@@ -226,6 +238,8 @@ class MuseAdapter(threading.Thread):
             # (Approval waits arrive as approval_wait events.)
             text = ev.get("text", "")
             if text:
+                self._message_pending = True
+                self._last_message = _short(text, 150)
                 cur = self.state.get("state")
                 keep = cur if cur in ("starting", "planning", "working",
                                       "tool_running", "awaiting_user") \
@@ -242,7 +256,8 @@ class MuseAdapter(threading.Thread):
                                 f"{_short(ev.get('reason') or '', 100)}")
         elif kind == "status":
             msg = ev.get("message", "")
-            if msg and "attempt" not in msg:
+            noisy = ("attempt", "serialized", "eligibility", "diagnostic")
+            if msg and not any(n in msg for n in noisy):
                 self._emit(state="working", activity=_short(msg, 120))
 
     def _read_new(self):
@@ -277,10 +292,23 @@ class MuseAdapter(threading.Thread):
             elif obj.get("record_type") == "event":
                 records = [obj]
             for rec in records:
+                self._last_record_ts = time.time()
                 try:
                     self._handle_record(rec)
                 except Exception:
                     pass
+
+    def _check_quiet(self):
+        """Interactive sessions emit no session.end at the end of a
+        turn. If the agent produced its reply message and the log has
+        been quiet for a few seconds, the turn is over."""
+        busy = ("starting", "planning", "working", "tool_running")
+        if self._message_pending and self.state.get("state") in busy \
+                and self._last_record_ts \
+                and time.time() - self._last_record_ts > 4:
+            self._message_pending = False
+            self._emit(state="completed", tool=None,
+                       activity=self._last_message or "Turn finished")
 
     # -- main loop -------------------------------------------------------------
     def run(self):
@@ -295,6 +323,7 @@ class MuseAdapter(threading.Thread):
                     self.state["session_id"] = None
                 if self.current_file:
                     self._read_new()
+                    self._check_quiet()
                     self.state["active_subagents"] = \
                         self._count_subagents(self.current_file)
             except Exception:

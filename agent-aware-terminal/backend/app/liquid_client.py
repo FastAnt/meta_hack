@@ -88,6 +88,42 @@ class LiquidClient:
         val = ans.get("noul")
         return float(val) if val is not None else None
 
+    def classify_activity(self, state: str) -> dict | None:
+        """System-1 classification of what the agent is doing right now.
+
+        Returns {"choice": str, "confidence": float} with choice in
+        thinking / searching_system / searching_web / writing_code /
+        waiting_for_user, or None when unavailable.
+        """
+        answers = self.decide(state, {
+            "activity_kind": {
+                "type": "choice",
+                "instructions": (
+                    "What is the coding agent doing right now, judging "
+                    "by its current tool, recent actions and plan step?"),
+                "criteria": {
+                    "thinking": "Reasoning, planning, analyzing; no tool "
+                                "is actively running",
+                    "searching_system": "Reading or searching local files "
+                                        "and code, listing, grepping",
+                    "searching_web": "Searching the internet or fetching "
+                                     "web pages and documentation",
+                    "writing_code": "Editing or creating files, running "
+                                    "builds, tests or shell commands",
+                    "waiting_for_user": "The agent has finished its "
+                                        "reply and is waiting for the "
+                                        "user, or asks the user something",
+                },
+            },
+        })
+        if not answers:
+            return None
+        ans = answers.get("activity_kind") or {}
+        if not ans.get("choice"):
+            return None
+        return {"choice": ans["choice"],
+                "confidence": float(ans.get("confidence") or 0)}
+
     def evaluate_session(self, state: str) -> dict | None:
         """Completion + safety scores in a single call.
 
