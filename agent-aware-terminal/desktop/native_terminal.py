@@ -1208,6 +1208,14 @@ def build_css(dark: bool) -> bytes:
   letter-spacing: -0.5px;
 }}
 .content-sub {{ color: {p['muted']}; font-family: {GROTESK}; font-size: 14px; }}
+.content-kicker {{ color: {p['muted']}; font-family: {MONO}; font-size: 10px; letter-spacing: 2.5px; }}
+.content-body {{ color: {p['body']}; font-family: {GROTESK}; font-size: 14px; }}
+.content-q {{ color: {p['text']}; font-family: {GROTESK}; font-size: 16px; font-weight: 600; }}
+button.choice {{ background: transparent; color: {p['body']}; border: 1px solid {p['border']}; border-radius: 12px; padding: 12px 14px; font-family: {GROTESK}; font-size: 15px; box-shadow: none; }}
+button.choice:hover {{ border-color: {p['text']}; color: {p['text']}; }}
+button.choice-right {{ background: {p['text']}; color: {p['bg']}; border-color: {p['text']}; }}
+button.choice-wrong {{ color: {p['muted']}; border-color: {p['muted']}; }}
+button.game-next {{ background: transparent; color: {p['text']}; border: 1px solid {p['text']}; border-radius: 9999px; padding: 7px 16px; font-family: {GROTESK}; font-size: 13px; box-shadow: none; }}
 .mode-agent {{ color: {p['muted']}; font-family: {MONO}; font-size: 10px; letter-spacing: 2.5px; }}
 button.term-return {{ color: {p['text']}; background: transparent; border: 1px solid {p['text']}; border-radius: 9999px; padding: 7px 16px; font-family: {GROTESK}; font-size: 13px; font-weight: 500; }}
 button.term-return:hover {{ background: {p['surface2']}; }}
@@ -1492,6 +1500,13 @@ def run_gui(project_arg: str | None) -> int:
     DARK = _env_theme == "dark" or (
         _env_theme != "light" and (_prefer_dark or "dark" in _theme))
     PAL = PALETTES["dark" if DARK else "light"]
+
+    def _rgb(v):
+        if isinstance(v, str) and v.startswith("#"):
+            h = v.lstrip("#")
+            return tuple(int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+        return v
+    PALC = {k: _rgb(v) for k, v in PAL.items()}
     provider = Gtk.CssProvider()
     provider.load_from_data(build_css(DARK))
     Gtk.StyleContext.add_provider_for_screen(
@@ -1501,6 +1516,14 @@ def run_gui(project_arg: str | None) -> int:
     project_path = project_arg or os.environ.get("AAT_PROJECT") \
         or str(ensure_demo_project())
     core = Core(project_path)
+    from backend.app import content_engine as ce
+    from backend.app.content_engine import (ContentEngine,
+                                            default_content_dirs)
+    engine = ContentEngine(default_content_dirs(
+        DATA_DIR, RES_ROOT, sys.executable))
+    core.dlog("content", f"{len(engine.packs)} content packs loaded"
+              + (f"; pack errors: {'; '.join(engine.errors[:2])}"
+                 if engine.errors else ""))
 
     app = Gtk.Application(
         application_id=os.environ.get("AAT_APP_ID",
@@ -1510,6 +1533,7 @@ def run_gui(project_arg: str | None) -> int:
                "mode": "blinky", "user_closed_task": None,
                "results_shown_task": None, "layout": "overlay",
                "left_override": None, "_agent_busy": False,
+               "_busy_since": None,
                "_square_mode": "blinky"}
 
     # ---------------- end-of-session result squares ----------------
@@ -2337,18 +2361,81 @@ def run_gui(project_arg: str | None) -> int:
         content.get_style_context().add_class("scene")
         content.set_hexpand(True)
         content.set_vexpand(True)
+        S["game_ctl"] = {"game": None, "answered": False,
+                         "chosen": None, "rects": {}, "radii": [],
+                         "center": (0.0, 0.0), "btns": {}}
+        game_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                           spacing=8)
+        game_box.set_margin_top(28)
+        game_box.set_margin_bottom(22)
+        game_box.set_margin_start(34)
+        game_box.set_margin_end(34)
+        top_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        S["game_kicker"] = Gtk.Label(label="")
+        S["game_kicker"].get_style_context().add_class("content-kicker")
+        S["game_progress"] = Gtk.Label(label="")
+        S["game_progress"].get_style_context().add_class("content-sub")
+        top_row.pack_start(S["game_kicker"], False, False, 0)
+        top_row.pack_end(S["game_progress"], False, False, 0)
+        game_box.pack_start(top_row, False, False, 0)
+        S["game_title"] = Gtk.Label(label="")
+        S["game_title"].get_style_context().add_class("content-soon")
+        S["game_title"].set_xalign(0)
+        S["game_title"].set_line_wrap(True)
+        game_box.pack_start(S["game_title"], False, False, 2)
+        S["game_hint"] = Gtk.Label(label="")
+        S["game_hint"].get_style_context().add_class("content-sub")
+        S["game_hint"].set_xalign(0)
+        game_box.pack_start(S["game_hint"], False, False, 6)
+        S["game_scene"] = Gtk.DrawingArea()
+        S["game_scene"].set_size_request(-1, 300)
+        S["game_scene"].set_hexpand(True)
+        S["game_scene"].set_vexpand(True)
+        S["game_scene"].connect("draw", draw_game_scene)
+        scene_ev = Gtk.EventBox()
+        scene_ev.add(S["game_scene"])
+        scene_ev.connect("button-press-event", on_game_scene_click)
+        game_box.pack_start(scene_ev, True, True, 4)
+        S["game_body"] = Gtk.Label(label="")
+        S["game_body"].get_style_context().add_class("content-body")
+        S["game_body"].set_xalign(0)
+        S["game_body"].set_line_wrap(True)
+        game_box.pack_start(S["game_body"], False, False, 2)
+        S["game_q"] = Gtk.Label(label="")
+        S["game_q"].get_style_context().add_class("content-q")
+        S["game_q"].set_xalign(0)
+        S["game_q"].set_line_wrap(True)
+        game_box.pack_start(S["game_q"], False, False, 6)
+        S["game_choices"] = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        game_box.pack_start(S["game_choices"], False, False, 2)
+        fb_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                         spacing=12)
+        S["game_fb"] = Gtk.Label(label="")
+        S["game_fb"].get_style_context().add_class("content-body")
+        S["game_fb"].set_xalign(0)
+        S["game_fb"].set_line_wrap(True)
+        fb_row.pack_start(S["game_fb"], True, True, 0)
+        S["game_next"] = Gtk.Button(label="Next")
+        S["game_next"].get_style_context().add_class("game-next")
+        S["game_next"].connect("clicked", lambda *_: serve_game(True))
+        fb_row.pack_end(S["game_next"], False, False, 0)
+        game_box.pack_start(fb_row, False, False, 8)
+        S["game_box"] = game_box
+        content.pack_start(game_box, True, True, 0)
+        empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                            spacing=10)
+        empty_box.set_halign(Gtk.Align.CENTER)
+        empty_box.set_valign(Gtk.Align.CENTER)
         soon = Gtk.Label(label="Soon content will appear")
         soon.get_style_context().add_class("content-soon")
         soon_sub = Gtk.Label(
             label="While the agent works, this space is yours.")
         soon_sub.get_style_context().add_class("content-sub")
-        inner_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
-                            spacing=10)
-        inner_box.set_halign(Gtk.Align.CENTER)
-        inner_box.set_valign(Gtk.Align.CENTER)
-        inner_box.pack_start(soon, False, False, 0)
-        inner_box.pack_start(soon_sub, False, False, 0)
-        content.pack_start(inner_box, True, False, 0)
+        empty_box.pack_start(soon, False, False, 0)
+        empty_box.pack_start(soon_sub, False, False, 0)
+        S["game_empty"] = empty_box
+        content.pack_start(empty_box, True, False, 0)
         S["left_stack"] = Gtk.Stack()
         S["left_stack"].set_transition_type(
             Gtk.StackTransitionType.CROSSFADE)
@@ -2515,6 +2602,7 @@ def run_gui(project_arg: str | None) -> int:
             None, GLib.SpawnFlags.DEFAULT, None, None, -1, None,
             on_spawn, None)
         vte.grab_focus()
+        serve_game(False)
         GLib.timeout_add(280, tick)
         if os.environ.get("AAT_OPEN_OVERLAY"):
             GLib.timeout_add(1300, lambda: (set_overlay(True), False)[1])
@@ -2523,6 +2611,7 @@ def run_gui(project_arg: str | None) -> int:
 
     # ---------------- actions ----------------
     def draw_mode_btn(area, cr):
+        import math
         w, h = area.get_allocated_width(), area.get_allocated_height()
         s = max(min(w, h) - 8, 10)
         x, y = (w - s) / 2, (h - s) / 2
@@ -2539,7 +2628,7 @@ def run_gui(project_arg: str | None) -> int:
         if mode in ("shuffle", "question"):
             pulse = 0.35 + 0.30 * abs(math.sin(time.time() * 2.6))
             rr(x - 3, y - 3, s + 6, 5)
-            cr.set_source_rgba(*PAL["text"], pulse)
+            cr.set_source_rgba(*PALC["text"], pulse)
             cr.set_line_width(1.2)
             cr.stroke()
         if not S["overlay_on"]:
@@ -2559,7 +2648,7 @@ def run_gui(project_arg: str | None) -> int:
             rr(x, y, s, 3)
             cr.set_source_rgba(*PAL["square"], 0.92)
             cr.fill()
-            cr.set_source_rgba(*PAL["bg"], 1)
+            cr.set_source_rgba(*PALC["bg"], 1)
             cr.set_line_width(2.0)
             cr.set_line_cap(1)
             cr.move_to(x + 0.28 * s, y + 0.52 * s)
@@ -2570,7 +2659,7 @@ def run_gui(project_arg: str | None) -> int:
             rr(x, y, s, 3)
             cr.set_source_rgba(*PAL["square"], 0.85)
             cr.fill()
-            cr.set_source_rgba(*PAL["bg"], 1)
+            cr.set_source_rgba(*PALC["bg"], 1)
             cr.set_line_width(1.8)
             cr.move_to(x + 0.32 * s, y + 0.32 * s)
             cr.line_to(x + 0.68 * s, y + 0.68 * s)
@@ -2581,7 +2670,7 @@ def run_gui(project_arg: str | None) -> int:
             rr(x, y, s, 3)
             cr.set_source_rgba(*PAL["square"], 0.92)
             cr.fill()
-            cr.set_source_rgba(*PAL["bg"], 1)
+            cr.set_source_rgba(*PALC["bg"], 1)
             cr.select_font_face("Inter", 0, 1)
             cr.set_font_size(0.62 * s)
             ext = cr.text_extents("?")
@@ -2597,6 +2686,226 @@ def run_gui(project_arg: str | None) -> int:
             rr(x, y, s, 3)
             cr.set_source_rgba(*PAL["square"], 0.92)
             cr.fill()
+        return False
+
+    # ---------------- companion content (games) ----------------
+    def serve_game(advance=True):
+        ctl = S["game_ctl"]
+        game = engine.next_game() if advance else engine.current()
+        ctl.update(game=game, answered=False, chosen=None, btns={})
+        if game is None:
+            S["game_box"].hide()
+            S["game_empty"].show_all()
+            return
+        S["game_empty"].hide()
+        S["game_box"].show_all()
+        S["game_kicker"].set_text(
+            (game.get("kicker") or game.get("topic")
+             or "WHILE YOU WAIT").upper())
+        i, n = engine.progress()
+        S["game_progress"].set_text(f"{i} / {n}" if n else "")
+        S["game_title"].set_text(game.get("title", ""))
+        S["game_hint"].set_text(game.get("hint", ""))
+        S["game_body"].set_text(game.get("body", ""))
+        S["game_q"].set_text(game.get("question", ""))
+        for child in list(S["game_choices"].get_children()):
+            S["game_choices"].remove(child)
+        for ch in game.get("choices") or []:
+            btn = Gtk.Button(label=ch.get("label", ""))
+            btn.get_style_context().add_class("choice")
+            lbl = btn.get_child()
+            if lbl is not None:
+                lbl.set_xalign(0.0)
+                lbl.set_margin_start(4)
+            btn.connect("clicked",
+                        lambda _b, cid=ch["id"]: game_answer(cid))
+            ctl["btns"][ch["id"]] = btn
+            S["game_choices"].pack_start(btn, False, False, 0)
+            btn.show()
+        S["game_fb"].set_text("")
+        S["game_next"].hide()
+        S["game_scene"].queue_draw()
+        core.dlog("content", f"serving {game.get('id')}")
+
+    def game_answer(target):
+        ctl = S["game_ctl"]
+        game = ctl.get("game")
+        if not game or ctl["answered"]:
+            return
+        ctl["answered"] = True
+        ctl["chosen"] = target
+        out = engine.answer(target)
+        expl = out.get("explanation") or ""
+        head = {True: "Correct. ", False: "Not quite. "}.get(
+            out["correct"], "")
+        tail = ""
+        if game.get("kind", "quiz") == "quiz":
+            sc = engine.score
+            tail = (f"  Score {sc['correct']}/{sc['answered']}"
+                    f" · streak {sc['streak']}")
+        S["game_fb"].set_text((head + expl + tail).strip())
+        for cid, b in ctl["btns"].items():
+            b.set_sensitive(False)
+            if cid == game.get("answer"):
+                b.get_style_context().add_class("choice-right")
+            elif cid == target:
+                b.get_style_context().add_class("choice-wrong")
+        S["game_next"].show()
+        S["game_scene"].queue_draw()
+        core.dlog("content", f"answer {target} in {game.get('id')}: "
+                             f"correct={out['correct']}")
+
+    def _scene_geom(game, w, h):
+        ctl = S["game_ctl"]
+        scene = game.get("scene") or {}
+        if scene.get("type") == "orbits":
+            ctl.update(center=(w / 2, h / 2),
+                       radii=ce.ring_radii(w, h,
+                                            int(scene.get("rings", 4))),
+                       rects={})
+        elif scene.get("type") == "diagram":
+            ctl.update(rects=ce.node_rects(scene.get("nodes") or [],
+                                           w, h), radii=[])
+        else:
+            ctl.update(rects={}, radii=[])
+
+    def draw_game_scene(area, cr):
+        import math
+        ctl = S["game_ctl"]
+        game = ctl.get("game")
+        if not game:
+            return False
+        w, h = area.get_allocated_width(), area.get_allocated_height()
+        scene = game.get("scene") or {}
+        _scene_geom(game, w, h)
+        stype = scene.get("type")
+        strong = PAL["square"]
+        text = PALC["text"]
+
+        def rr(x, y, rw, rh, r):
+            cr.new_path()
+            cr.arc(x + rw - r, y + r, r, -1.5708, 0)
+            cr.arc(x + rw - r, y + rh - r, r, 0, 1.5708)
+            cr.arc(x + r, y + rh - r, r, 1.5708, 3.1416)
+            cr.arc(x + r, y + r, r, 3.1416, 4.7124)
+            cr.close_path()
+
+        if stype == "orbits":
+            cx, cy = ctl["center"]
+            for i, r in enumerate(ctl["radii"]):
+                cr.arc(cx, cy, r, 0, 6.2832)
+                if ctl["answered"] and game.get("answer") == f"ring-{i + 1}":
+                    cr.set_source_rgba(*strong, 0.95)
+                    cr.set_line_width(2.8)
+                elif ctl["answered"] and ctl["chosen"] == f"ring-{i + 1}":
+                    cr.set_source_rgba(*text, 0.9)
+                    cr.set_line_width(2.2)
+                else:
+                    cr.set_source_rgba(*PALC["muted"], 0.55)
+                    cr.set_line_width(1.2)
+                cr.stroke()
+            cr.arc(cx, cy, 15, 0, 6.2832)
+            cr.set_source_rgba(*strong, 0.95)
+            cr.set_line_width(1.6)
+            cr.stroke()
+            cr.set_source_rgba(*strong, 0.75)
+            cr.set_line_width(1.3)
+            for k in range(8):
+                a = k * 0.7854
+                cr.move_to(cx + 21 * math.cos(a), cy + 21 * math.sin(a))
+                cr.line_to(cx + 29 * math.cos(a), cy + 29 * math.sin(a))
+            cr.stroke()
+            for dot in scene.get("dots") or []:
+                r = ctl["radii"][int(dot["ring"]) - 1]
+                a = math.radians(float(dot.get("angle", 0)))
+                cr.arc(cx + r * math.cos(a), cy + r * math.sin(a),
+                       5, 0, 6.2832)
+                cr.set_source_rgba(*strong, 0.95)
+                cr.fill()
+        elif stype == "diagram":
+            rects = ctl["rects"]
+            for e in scene.get("edges") or []:
+                a = rects.get(e.get("from"))
+                b = rects.get(e.get("to"))
+                if not a or not b:
+                    continue
+                ax, ay = a[0] + a[2] / 2, a[1] + a[3] / 2
+                bx, by = b[0] + b[2] / 2, b[1] + b[3] / 2
+                cr.move_to(ax, ay)
+                cr.line_to(bx, by)
+                cr.set_source_rgba(*PALC["muted"], 0.45)
+                cr.set_line_width(1.2)
+                cr.stroke()
+                ang = math.atan2(by - ay, bx - ax)
+                px, py = ax + (bx - ax) * 0.66, ay + (by - ay) * 0.66
+                cr.move_to(px, py)
+                cr.line_to(px - 9 * math.cos(ang - 0.42),
+                           py - 9 * math.sin(ang - 0.42))
+                cr.line_to(px - 9 * math.cos(ang + 0.42),
+                           py - 9 * math.sin(ang + 0.42))
+                cr.close_path()
+                cr.set_source_rgba(*text, 0.8)
+                cr.fill()
+            cr.select_font_face("Inter", 0, 0)
+            cr.set_font_size(15)
+            for n in scene.get("nodes") or []:
+                x, y, nw, nh = rects[n["id"]]
+                right = ctl["answered"] and game.get("answer") == n["id"]
+                wrong = ctl["answered"] and ctl["chosen"] == n["id"] \
+                    and not right
+                rr(x, y, nw, nh, 12)
+                if right:
+                    cr.set_source_rgba(*strong, 0.95)
+                    cr.fill()
+                    cr.set_source_rgba(*PALC["bg"], 1)
+                else:
+                    cr.set_source_rgba(*PALC["bg"], 1)
+                    cr.fill_preserve()
+                    cr.set_source_rgba(*text, 0.85 if wrong else 0.5)
+                    cr.set_line_width(2.2 if wrong else 1.2)
+                    cr.stroke()
+                    cr.set_source_rgba(*text, 1)
+                ext = cr.text_extents(n.get("label", ""))
+                cr.move_to(x + nw / 2 - (ext.width / 2 + ext.x_bearing),
+                           y + nh / 2 - (ext.height / 2 + ext.y_bearing))
+                cr.show_text(n.get("label", ""))
+        elif stype == "network":
+            layers = scene.get("layers") or [3, 4, 2]
+            pts = ce.network_positions(layers, w, h)
+            by_layer = {}
+            for x, y, li in pts:
+                by_layer.setdefault(li, []).append((x, y))
+            cr.set_source_rgba(*PALC["muted"], 0.18)
+            cr.set_line_width(1.0)
+            for li in sorted(by_layer)[:-1]:
+                for x1, y1 in by_layer[li]:
+                    for x2, y2 in by_layer[li + 1]:
+                        cr.move_to(x1, y1)
+                        cr.line_to(x2, y2)
+            cr.stroke()
+            for x, y, _li in pts:
+                cr.arc(x, y, 13, 0, 6.2832)
+                cr.set_source_rgba(*PALC["bg"], 1)
+                cr.fill_preserve()
+                cr.set_source_rgba(*strong, 0.9)
+                cr.set_line_width(1.4)
+                cr.stroke()
+        return False
+
+    def on_game_scene_click(_w, event):
+        ctl = S["game_ctl"]
+        game = ctl.get("game")
+        if not game or ctl["answered"]:
+            return False
+        scene = game.get("scene") or {}
+        target = None
+        if scene.get("type") == "orbits":
+            cx, cy = ctl["center"]
+            target = ce.orbit_hit(cx, cy, ctl["radii"], event.x, event.y)
+        elif scene.get("type") == "diagram":
+            target = ce.node_hit(ctl["rects"], event.x, event.y)
+        if target:
+            game_answer(target)
         return False
 
     def set_overlay(show: bool):
@@ -2637,7 +2946,12 @@ def run_gui(project_arg: str | None) -> int:
             return "terminal"
         if S.get("left_override"):
             return S["left_override"]
-        return "content" if S.get("_agent_busy") else "terminal"
+        # Content earns the left pane only once the agent has been
+        # away for a while — short tasks never interrupt typing.
+        if S.get("_agent_busy") and S.get("_busy_since") \
+                and time.time() - S["_busy_since"] >= 10:
+            return "content"
+        return "terminal"
 
     def apply_left():
         target = current_left_target()
@@ -2647,6 +2961,10 @@ def run_gui(project_arg: str | None) -> int:
                             f"({'manual' if S.get('left_override') else 'auto'})")
             if target == "terminal":
                 S["vte"].grab_focus()
+            elif target == "content":
+                ctl = S["game_ctl"]
+                if ctl["game"] is None or ctl["answered"]:
+                    serve_game(True)
         S["mode_btn"].queue_draw()
 
     def toggle_left():
@@ -2965,6 +3283,7 @@ def run_gui(project_arg: str | None) -> int:
             busy_now = state in BUSY_STATES
             if busy_now != S.get("_agent_busy"):
                 S["_agent_busy"] = busy_now
+                S["_busy_since"] = time.time() if busy_now else None
                 S["left_override"] = None  # new phase: auto resumes
             apply_left()
             if S.get("_last_mode") != mode:

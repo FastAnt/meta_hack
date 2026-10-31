@@ -1,0 +1,3 @@
+{"sleep": 1, "state": "idle", "expect": "blinky"}
+{"sleep": 2, "state": "tool_running", "tool": "bash", "command": "make all", "activity": "make", "expect": "compile"}
+{"sleep": 30, "state": "completed", "expect": "done"}

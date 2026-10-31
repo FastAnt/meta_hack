@@ -313,3 +313,18 @@ Only Muse has a log adapter. Other agent CLIs found in the terminal
   adapter lifecycle, scoring guards, source priority.
 - `python3 tools/check_states.py` — boots the built binary once
   per mock state and asserts the reached mode via the decision log.
+
+## Companion content (games while the agent works)
+
+When the agent has been busy for more than 10 seconds, the left
+pane switches from the terminal to companion content; clicking
+the square brings the terminal back. Content is served by
+`backend/app/content_engine.py` from JSON packs that are never
+baked into the binary — drop a pack into
+`~/.local/share/agent-aware-terminal/content/` (or `./content/`,
+or `$AAT_CONTENT_DIR`) and it joins the deck on the next game,
+no restart or rebuild. Pack kinds: `quiz` (scored: orbits /
+diagram / network scenes, choice rows, explanations, streaks)
+and `card` (news, refactoring suggestions — unscored). Three
+sample games live in `content/games/`; the schema and validation
+rules are documented at the top of the engine module.

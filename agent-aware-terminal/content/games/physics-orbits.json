@@ -1,0 +1,21 @@
+{
+  "id": "physics-orbits-001",
+  "kind": "quiz",
+  "kicker": "MINI GAME",
+  "topic": "Physics",
+  "title": "Click the orbit where Mercury should be",
+  "hint": "Choose the innermost orbit",
+  "scene": {
+    "type": "orbits",
+    "rings": 4,
+    "dots": [
+      {"ring": 2, "angle": 35},
+      {"ring": 3, "angle": 165},
+      {"ring": 4, "angle": 300}
+    ]
+  },
+  "question": "Three planets are already placed. Which orbit is Mercury's?",
+  "choices": [],
+  "answer": "ring-1",
+  "explanation": "Mercury is the closest planet to the Sun — the innermost orbit. Then come Venus, Earth and Mars."
+}
