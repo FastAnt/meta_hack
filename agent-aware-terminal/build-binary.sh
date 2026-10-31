@@ -25,6 +25,7 @@ fi
   --hidden-import backend.app.project_indexer \
   --hidden-import backend.app.content \
   --hidden-import backend.app.meta_client \
+  --hidden-import backend.app.liquid_client \
   --collect-all gi desktop/native_terminal.py
 echo
 echo "Done: dist/agent-aware-terminal/agent-aware-terminal"

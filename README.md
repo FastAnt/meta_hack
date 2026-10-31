@@ -27,7 +27,12 @@ tmux, ssh all work as usual) with a calm visual layer on top of it:
   with grotesk typography — no generated imagery in the UI;
 - the Muse Image / Muse Spark pipelines (project worlds, session
   posters, explanations, quizzes) run in the backend and return to the
-  UI with the next, data-rich design iteration.
+  UI with the next, data-rich design iteration;
+- the overlay opens only when a **System-1 decision model (Liquid AI
+  d1.1)** predicts the task will run autonomously for more than ~20 s —
+  and when the agent finishes, three small squares summarize the run:
+  files changed (real git diff, green/red), task completeness (1–5
+  score), and change safety (1–5 score).
 
 The core product principle: **AI draws, code tells the truth.** Generated
 images never carry text, numbers, or diagrams — every fact on screen

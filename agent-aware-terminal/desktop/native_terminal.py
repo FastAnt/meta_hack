@@ -54,6 +54,35 @@ def ensure_demo_project() -> Path:
     return dst
 
 
+def git_changes(root: str):
+    """Real per-file changes from git: [{file, add, del}] or None."""
+    import subprocess
+    try:
+        out = subprocess.run(["git", "-C", root, "diff", "--numstat", "HEAD"],
+                             capture_output=True, text=True, timeout=10)
+        if out.returncode != 0:
+            return None
+        files = []
+        for line in out.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 3:
+                add = 0 if parts[0] == "-" else int(parts[0])
+                dele = 0 if parts[1] == "-" else int(parts[1])
+                files.append({"file": parts[2], "add": add, "del": dele})
+        tracked = {f["file"] for f in files}
+        status = subprocess.run(["git", "-C", root, "status", "--porcelain"],
+                                capture_output=True, text=True, timeout=10)
+        for line in status.stdout.splitlines():
+            code, name = line[:2], line[3:].strip()
+            if code == "??" and name and not name.endswith("/") \
+                    and name not in tracked:
+                files.append({"file": name, "add": 1, "del": 0,
+                              "untracked": True})
+        return files
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Core: backend logic without any HTTP layer
 # ---------------------------------------------------------------------------
@@ -68,6 +97,8 @@ class Core:
         self._index_project = index_project
         self._deterministic_cards = deterministic_cards
         self.meta = MetaClient()
+        from backend.app.liquid_client import LiquidClient
+        self.liquid = LiquidClient()
         self.store = CardStore(str(DATA_DIR / "saved_cards.json"))
         self.project: dict | None = None
         self.project_path = project_path
@@ -83,6 +114,15 @@ class Core:
         self.poster_path: Path | None = None
         self.world_status = "idle"
         self.poster_status = "idle"
+        # System-1 overlay gate + end-of-session results
+        self.gate = {"task_key": None, "decision": None, "p": None,
+                     "source": None, "asks": 0, "asking": False,
+                     "last_ask": 0.0}
+        self.results: dict | None = None
+        self.step_count = 0
+        self._session_key = None
+        self._last_state = "idle"
+        self._busy_since: float | None = None
         self._lock = threading.Lock()
 
         self.adapter = MuseAdapter(self._on_agent_event, self._get_cwd)
@@ -132,6 +172,21 @@ class Core:
         return self.snapshot.get("cwd") or self.project_path
 
     def _on_agent_event(self, ev: dict):
+        skey = ev.get("session_id") or ""
+        if skey and skey != self._session_key:
+            self._session_key = skey
+            self.step_count = 0
+            self.results = None
+            self.gate = {"task_key": None, "decision": None, "p": None,
+                         "source": None, "asks": 0, "asking": False,
+                         "last_ask": 0.0}
+        state = ev.get("state")
+        if state in ("working", "tool_running"):
+            self.step_count += 1
+        if state in ("completed", "failed") and self._last_state in \
+                BUSY + ("awaiting_user",):
+            self._finish_session(state)
+        self._last_state = state or self._last_state
         with self._lock:
             self.adapter_state = dict(self.adapter.state)
             self.timeline.appendleft(ev)
@@ -147,6 +202,143 @@ class Core:
                     self.working_since = time.time()
             elif ev.get("state") in ("completed", "failed", "awaiting_user"):
                 self.working_since = self.working_since  # keep for stats
+
+    # -- System-1 overlay gate -------------------------------------------
+    def _gate_state_text(self, elapsed: float) -> str:
+        st = self.agent_state
+        plan = st.get("plan") or []
+        plan_txt = "; ".join(
+            f"[{i.get('status', '?')}] {i.get('text', '')}" for i in plan) \
+            or "no plan yet"
+        recent = []
+        for ev in list(self.timeline)[:6]:
+            txt = str(ev.get("activity") or ev.get("tool") or "").strip()
+            if txt:
+                recent.append(txt)
+        return (
+            "A coding agent is working in a terminal.\n"
+            f"Task from the user: {st.get('task') or '(unknown)'}\n"
+            f"Plan: {plan_txt}\n"
+            f"Elapsed: {int(elapsed)}s, steps so far: {self.step_count}, "
+            f"state: {st.get('state')}, current tool: {st.get('tool')}\n"
+            f"Files touched: {', '.join(self.stats['files_touched'][:10]) or 'none yet'}\n"
+            f"Recent activity: {' | '.join(recent) or 'starting'}")
+
+    def gate_tick(self, min_seconds: float = 5.0):
+        """Ask System 1 (Liquid d1.1) whether this task is a long one.
+
+        Called from the UI tick. Decision is cached per task; a "short"
+        answer is re-checked at most every 25 s, four times max. Without
+        a Liquid key a documented heuristic decides instead.
+        """
+        st = self.agent_state
+        state = st.get("state")
+        if state not in BUSY:
+            self._busy_since = None
+            return self.gate
+        now = time.time()
+        if self._busy_since is None:
+            self._busy_since = now
+        elapsed = now - self._busy_since
+        key = (st.get("session_id") or self.project_path,
+               (st.get("task") or "")[:80])
+        if key != self.gate["task_key"]:
+            self.gate = {"task_key": key, "decision": None, "p": None,
+                         "source": None, "asks": 0, "asking": False,
+                         "last_ask": 0.0}
+        g = self.gate
+        if g["asking"] or g["decision"] == "long" or g["asks"] >= 4:
+            return g
+        if elapsed < min_seconds:
+            return g
+        if self.adapter_state and self.step_count < 2:
+            return g  # wait until the agent has taken a couple of steps
+        if g["decision"] == "short" and now - g["last_ask"] < 25:
+            return g
+        g["asking"] = True
+        g["asks"] += 1
+        g["last_ask"] = now
+        state_text = self._gate_state_text(elapsed)
+        plan_n = len(st.get("plan") or [])
+        steps = self.step_count
+
+        def _ask():
+            try:
+                p = self.liquid.predict_long_task(state_text) \
+                    if self.liquid.configured else None
+                if p is not None:
+                    g["p"] = round(float(p), 3)
+                    g["source"] = f"liquid {self.liquid.model}"
+                    g["decision"] = "long" if p >= 0.5 else "short"
+                else:
+                    long_task = plan_n >= 3 or steps >= 4 or elapsed >= 25
+                    g["p"] = 0.85 if long_task else 0.3
+                    g["source"] = "heuristic (no LIQUID_API_KEY)"
+                    g["decision"] = "long" if long_task else "short"
+            except Exception:
+                g["decision"] = "short"
+                g["source"] = "liquid error → short"
+            finally:
+                g["asking"] = False
+        threading.Thread(target=_ask, daemon=True).start()
+        return g
+
+    # -- end-of-session results ------------------------------------------
+    def _finish_session(self, final_state: str):
+        files = git_changes(self.project_path)
+        if files is None:
+            files = [{"file": f, "add": 1, "del": 0}
+                     for f in self.stats["files_touched"]]
+        self.results = {"files": files, "completion": None,
+                        "safety": None, "source": "pending",
+                        "final_state": final_state}
+        st = dict(self.agent_state)
+        stats = {"files_touched": list(self.stats["files_touched"]),
+                 "events": self.stats["events"]}
+        results_ref = self.results
+
+        def _score():
+            plan = st.get("plan") or []
+            done = sum(1 for i in plan if i.get("status") == "done")
+            adds = sum(f["add"] for f in files)
+            dels = sum(f["del"] for f in files)
+            tools = sorted({str(ev.get("tool")) for ev in self.timeline
+                            if ev.get("tool")})
+            state_text = (
+                f"Task given to a coding agent: {st.get('task') or '(unknown)'}\n"
+                f"Plan: {done}/{len(plan)} steps done. "
+                f"Final state: {final_state}. "
+                f"Agent's final report: {st.get('activity') or ''}\n"
+                f"Changes in the git working tree: {len(files)} files, "
+                f"+{adds} -{dels} lines. Files: "
+                + ", ".join(f"{f['file']} (+{f['add']}/-{f['del']})"
+                            for f in files[:14])
+                + f"\nTools used: {', '.join(tools) or 'unknown'}. "
+                f"Events: {stats['events']}.")
+            try:
+                ev = self.liquid.evaluate_session(state_text) \
+                    if self.liquid.configured else None
+            except Exception:
+                ev = None
+            if ev:
+                results_ref["completion"] = ev["completion"]
+                results_ref["safety"] = ev["safety"]
+                results_ref["source"] = f"liquid {self.liquid.model}"
+            else:
+                ratio = (done / len(plan)) if plan else (
+                    0.75 if final_state == "completed" else 0.0)
+                comp = round(4 * ratio)
+                del_ratio = dels / max(adds + dels, 1)
+                safe = 4 - (1 if len(files) > 8 else 0) \
+                    - (1 if del_ratio > 0.4 else 0) \
+                    - (1 if final_state == "failed" else 0)
+                results_ref["completion"] = {
+                    "score": float(comp), "confidence": 0.0}
+                results_ref["safety"] = {
+                    "score": float(max(0, min(4, safe))), "confidence": 0.0}
+                results_ref["source"] = "heuristic (no LIQUID_API_KEY)"
+
+        threading.Thread(target=_score, daemon=True).start()
 
     def on_snapshot(self, snap: dict):
         self.snapshot = snap
@@ -424,6 +616,7 @@ button.quiet:hover {{ color: {p['text']}; }}
 .mode-title {{ color: {p['text']}; font-family: {GROTESK}; font-size: 24px; font-weight: 500; letter-spacing: -0.3px; }}
 .mode-sub {{ color: {p['muted']}; font-family: {GROTESK}; font-size: 14px; }}
 .hint {{ color: {p['faint']}; font-family: {GROTESK}; font-size: 12px; }}
+.res-label {{ color: {p['muted']}; font-family: {MONO}; font-size: 10px; letter-spacing: 2px; }}
 .panel {{ background: {p['surface']}; color: {p['body']}; border-left: 1px solid {p['border']}; }}
 .panel textview, .panel textview text {{ background: {p['bg']}; color: {p['body']}; font-family: {MONO}; font-size: 11px; }}
 .panel entry {{ background: {p['bg']}; color: {p['text']}; }}
@@ -515,7 +708,71 @@ def run_gui(project_arg: str | None) -> int:
     app = Gtk.Application(application_id="dev.meta.agentawareterminal",
                           flags=Gio.ApplicationFlags.FLAGS_NONE)
     S: dict = {"win": None, "overlay_on": False, "panel_on": False,
-               "mode": "blinky"}
+               "mode": "blinky", "user_closed_task": None,
+               "results_shown_task": None}
+
+    # ---------------- end-of-session result squares ----------------
+    class ResultSquare(Gtk.DrawingArea):
+        """A small square: a file grid, or a level fill (score / 4)."""
+
+        GREEN = (0.36, 0.72, 0.48)
+        RED = (0.85, 0.42, 0.38)
+        NEUTRAL = (0.55, 0.58, 0.62)
+
+        def __init__(self):
+            super().__init__()
+            self.kind = "files"
+            self.files: list = []
+            self.frac: float | None = None
+            self.set_size_request(86, 86)
+            self.connect("draw", self._draw)
+
+        def set_files(self, files):
+            self.kind = "files"
+            self.files = list(files)[:36]
+            self.queue_draw()
+
+        def set_fill(self, frac):
+            self.kind = "fill"
+            self.frac = frac
+            self.queue_draw()
+
+        def _draw(self, _w, cr):
+            alloc = self.get_allocation()
+            w, h = float(alloc.width), float(alloc.height)
+            if w < 10:
+                return False
+            if self.kind == "files":
+                n = max(len(self.files), 1)
+                import math
+                cols = int(math.ceil(math.sqrt(n)))
+                cw = w / cols
+                for i in range(cols * cols):
+                    x, y = (i % cols) * cw, (i // cols) * cw
+                    if i < len(self.files):
+                        f = self.files[i]
+                        col = self.GREEN if f["add"] >= f["del"] else self.RED
+                        if f["add"] == 0 and f["del"] == 0:
+                            col = self.NEUTRAL
+                        cr.set_source_rgba(*col, 0.9)
+                    else:
+                        cr.set_source_rgba(*PAL["square"], 0.08)
+                    cr.rectangle(x + 1.5, y + 1.5, cw - 3, cw - 3)
+                    cr.fill()
+            else:
+                cr.set_source_rgba(*PAL["square"], 0.10)
+                cr.rectangle(0, 0, w, h)
+                cr.fill()
+                if self.frac is not None:
+                    fh = max(0.0, min(1.0, self.frac)) * h
+                    cr.set_source_rgba(*PAL["square"], 0.92)
+                    cr.rectangle(0, h - fh, w, fh)
+                    cr.fill()
+                cr.set_source_rgba(*PAL["square"], 0.45)
+                cr.set_line_width(1.2)
+                cr.rectangle(0.6, 0.6, w - 1.2, h - 1.2)
+                cr.stroke()
+            return False
 
     # ---------------- animated agent square ----------------
     class AgentSquare(Gtk.DrawingArea):
@@ -730,7 +987,7 @@ def run_gui(project_arg: str | None) -> int:
         atop.pack_end(btn_more, False, False, 8)
         btn_return = Gtk.Button(label="\u2190 Terminal")
         btn_return.get_style_context().add_class("term-return")
-        btn_return.connect("clicked", lambda *_: set_overlay(False))
+        btn_return.connect("clicked", lambda *_: user_close())
         atop.pack_end(btn_return, False, False, 0)
         scene.pack_start(atop, False, False, 0)
 
@@ -740,8 +997,7 @@ def run_gui(project_arg: str | None) -> int:
         S["square"] = AgentSquare()
         evbox = Gtk.EventBox()
         evbox.add(S["square"])
-        evbox.connect("button-press-event", lambda *_: (
-            set_overlay(False) if S["mode"] == "shuffle" else None))
+        evbox.connect("button-press-event", lambda *_: user_close())
         center.pack_start(evbox, False, False, 0)
         captions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=7)
         S["mode_label"] = Gtk.Label(label="BLINKY")
@@ -755,6 +1011,26 @@ def run_gui(project_arg: str | None) -> int:
             lab.set_halign(Gtk.Align.CENTER)
             captions.pack_start(lab, False, False, 0)
         center.pack_start(captions, False, False, 0)
+
+        res_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=22)
+        res_row.set_halign(Gtk.Align.CENTER)
+        S["res_squares"] = {}
+        S["res_labels"] = {}
+        for key, caption in (("files", "FILES"), ("completion", "DONE"),
+                             ("safety", "SAFE")):
+            col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=7)
+            sq = ResultSquare()
+            col.pack_start(sq, False, False, 0)
+            lab = Gtk.Label(label=caption)
+            lab.get_style_context().add_class("res-label")
+            lab.set_halign(Gtk.Align.CENTER)
+            col.pack_start(lab, False, False, 0)
+            res_row.pack_start(col, False, False, 0)
+            S["res_squares"][key] = sq
+            S["res_labels"][key] = lab
+        S["res_row"] = res_row
+        res_row.set_visible(False)
+        center.pack_start(res_row, False, False, 0)
         scene.pack_start(center, True, True, 0)
 
         S["hint"] = Gtk.Label(label="")
@@ -799,7 +1075,7 @@ def run_gui(project_arg: str | None) -> int:
         S["set_autoshow"].set_active(True)
         settings_box.pack_start(S["set_autoshow"], False, False, 0)
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        row.pack_start(Gtk.Label(label="Show after, sec"), False, False, 0)
+        row.pack_start(Gtk.Label(label="Ask System 1 after, sec"), False, False, 0)
         S["set_threshold"] = Gtk.SpinButton.new_with_range(2, 120, 1)
         S["set_threshold"].set_value(5)
         row.pack_start(S["set_threshold"], False, False, 0)
@@ -845,6 +1121,12 @@ def run_gui(project_arg: str | None) -> int:
             S["square"].stop()
             S["vte"].grab_focus()
 
+    def user_close():
+        """The user explicitly leaves the overlay: never auto-reopen
+        for the same task afterwards (the original stuck-overlay bug)."""
+        S["user_closed_task"] = core.gate.get("task_key")
+        set_overlay(False)
+
     def toggle_panel(show=None):
         S["panel_on"] = (not S["panel_on"]) if show is None else show
         S["panel"].set_visible(S["panel_on"])
@@ -862,7 +1144,7 @@ def run_gui(project_arg: str | None) -> int:
             if S["panel_on"]:
                 toggle_panel(False)
             elif S["overlay_on"]:
-                set_overlay(False)
+                user_close()
             return True
         return False
 
@@ -964,33 +1246,59 @@ def run_gui(project_arg: str | None) -> int:
             f"agent CLI (observed): {snap.get('agent_cli_detected') or 'not found'}\n"
             f"adapter session: {core.adapter.current_file or 'not attached'}\n"
             f"state (source={agent.get('source', '—')}): {agent.get('state', '—')}\n"
-            f"Muse Spark: {core.enrich_status} · Muse Image world: {core.world_status}\n\n"
+            f"Muse Spark: {core.enrich_status} · Muse Image world: {core.world_status}\n"
+            f"System-1 gate (Liquid): {core.gate.get('source') or 'not asked yet'}"
+            f" · decision={core.gate.get('decision')} · p={core.gate.get('p')}"
+            f" · steps={core.step_count}"
+            f" · key={'set' if core.liquid.configured else 'LIQUID_API_KEY missing'}\n\n"
             f"Process tree:\n{tree or '—'}")
 
     def tick():
         agent, _comp = display_state()
         S["pill"].set_text(f"● {agent.get('agent') or 'agent'} · {agent.get('state')}")
-        # autoshow: keep the user in context on long agent runs
-        if S["set_autoshow"].get_active() and not S["overlay_on"]:
-            if agent.get("state") in BUSY and core.working_since \
-                    and time.time() - core.working_since >= S["set_threshold"].get_value():
-                set_overlay(True)
+        state = agent.get("state")
+
+        # Mock completion gets demo results for reproducible screenshots.
+        if MOCK == "completed" and not core.results:
+            core.results = {
+                "files": [{"file": f, "add": a, "del": d} for f, a, d in (
+                    ("README.md", 18, 2), ("storage/db.py", 12, 9),
+                    ("core/engine.py", 30, 4), ("api/routes.py", 3, 14),
+                    ("tests/test_engine.py", 22, 0), ("ui/cli.py", 5, 5))],
+                "completion": {"score": 3.2, "confidence": 0.0},
+                "safety": {"score": 3.8, "confidence": 0.0},
+                "source": "mock", "final_state": "completed"}
+
+        # System-1 gate: ask Liquid d1.1 whether this is a long task.
+        core.gate_tick(min_seconds=S["set_threshold"].get_value())
+        gate = core.gate
+        task_key = gate.get("task_key")
+        suppressed = S["user_closed_task"] == task_key and task_key is not None
+        if S["set_autoshow"].get_active() and not S["overlay_on"] \
+                and not suppressed:
+            if state in ("completed", "failed") and core.results \
+                    and S["results_shown_task"] != task_key:
+                S["results_shown_task"] = task_key
+                set_overlay(True)  # show what the agent did
+            elif gate.get("decision") == "long":
+                set_overlay(True)  # System 1 predicted a long task
+
         if S["overlay_on"]:
             mode = mode_for_agent(agent)
             S["mode"] = mode
             S["square"].set_mode(mode)
             label, title = MODE_CAPTIONS[mode]
-            st = agent.get("state")
-            if st == "completed":
+            if state == "completed":
                 title = "Done"
-            elif st == "failed":
+            elif state == "failed":
                 title = "Failed"
-            elif st == "idle" and not agent.get("agent"):
+            elif state == "idle" and not agent.get("agent"):
                 title = "Waiting for an agent"
             S["mode_label"].set_text(label)
             if S["mode_title"].get_text() != title:
                 S["mode_title"].set_text(title)
-            busy = st in BUSY or st in ("awaiting_user", "completed", "failed")
+            busy = state in BUSY or state in ("awaiting_user", "completed",
+                                              "failed")
             S["mode_sub"].set_text(
                 short(pretty_activity(agent), 90) if busy else "")
             S["mode_agent"].set_text(
@@ -999,6 +1307,28 @@ def run_gui(project_arg: str | None) -> int:
                 "Click the square to return to the terminal"
                 if mode == "shuffle"
                 else "Esc \u2014 back to the terminal \u00b7 Ctrl+Shift+O")
+
+            # end-of-session results: three squares under the main one
+            res = core.results
+            show_res = state in ("completed", "failed") and res is not None
+            S["res_row"].set_visible(bool(show_res))
+            if show_res:
+                files = res["files"]
+                S["res_squares"]["files"].set_files(files)
+                S["res_labels"]["files"].set_text(f"FILES · {len(files)}")
+                for key, caption in (("completion", "DONE"),
+                                     ("safety", "SAFE")):
+                    sc = res.get(key)
+                    if sc:
+                        lvl = round(sc["score"])
+                        S["res_squares"][key].set_fill(sc["score"] / 4.0)
+                        conf = sc.get("confidence") or 0
+                        extra = f" · {int(conf * 100)}%" if conf else ""
+                        S["res_labels"][key].set_text(
+                            f"{caption} · {lvl}/4{extra}")
+                    else:
+                        S["res_squares"][key].set_fill(None)
+                        S["res_labels"][key].set_text(f"{caption} · …")
             if S["panel_on"]:
                 refresh_panel()
         return True

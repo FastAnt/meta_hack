@@ -10,3 +10,5 @@ data/*.log
 *.spec
 .env
 pulseboard-data.json
+
+keys.sh

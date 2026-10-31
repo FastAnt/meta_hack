@@ -85,6 +85,45 @@ mode is derived from the normalized agent event: `awaiting_user` →
 SHUFFLE, `planning` → COLOR FLASH, search/read tools → GLITCH, web tools
 → TRAIL, edit/bash tools → BUILD ON, everything else → BLINKY.
 
+## When does the overlay open? A System-1 gate
+
+The overlay never opens just because time passed (an earlier build
+re-opened it every 280 ms after a manual close — that bug is fixed: a
+manual close is respected for the rest of the task, and clicking the
+square always returns to the terminal).
+
+Instead, a fast decision model decides. Once the user has given the agent
+a task and the agent has taken a couple of steps, the app asks
+**Liquid AI's d1.1 decision model** (`POST
+https://api.liquid.ai/decisions/v1/systemone`, a `noul` question —
+probability, zero generated tokens): *"Will the agent keep working
+autonomously for more than ~20 seconds?"* Only a "long" answer opens the
+overlay — once per task. A "short" answer is re-checked every 25 s (max
+4 times) as the work grows. Key: `LIQUID_API_KEY` (or
+`SYSTEM_1_MODEL_API_KEY`); without one, a documented heuristic decides
+(plan ≥ 3 items, ≥ 4 steps, or ≥ 25 s elapsed) and the source is shown in
+Diagnostics.
+
+## After the run: three result squares
+
+When the agent finishes, the overlay shows what it did — three small
+squares under the main one:
+
+1. **FILES · n** — a grid with exactly one cell per modified file, from
+   the real `git diff --numstat` (untracked files count as added):
+   green where lines were mostly added, red where mostly removed.
+2. **DONE · x/4** — a fill square: how completely the task was done.
+   d1.1 scores the task + plan + final report + diff against a 5-level
+   rubric; the square fills to `score/4` and the caption shows the level
+   and the model confidence.
+3. **SAFE · x/4** — the same, for how safe the changes are for the
+   project and the system (deletions, scope, irreversibility, secrets,
+   verification), 5 levels from "dangerous" to "very safe".
+
+Without a Liquid key both scores fall back to transparent heuristics
+(plan completion ratio; deletion ratio and file count), labelled as such
+in Diagnostics.
+
 Palettes are Linear-style token stacks (dark: `#08090a` canvas, `#f7f8f8`
 text, 1px `#23252a` borders; light: the same roles inverted). The theme is
 read from GTK settings at startup (`AAT_THEME=dark|light` overrides, for
