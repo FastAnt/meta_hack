@@ -83,6 +83,91 @@ def git_changes(root: str):
         return None
 
 
+_SKIP_DIRS = {".git", "__pycache__", ".venv", ".venv-build",
+              "node_modules", ".pytest_cache", "dist", "build"}
+
+
+def snapshot_files(root: str) -> dict:
+    """{relative path: (size, mtime)} for everything under root."""
+    out = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        for fn in filenames:
+            path = os.path.join(dirpath, fn)
+            try:
+                st = os.stat(path)
+                out[os.path.relpath(path, root)] = (st.st_size,
+                                                    int(st.st_mtime))
+            except OSError:
+                pass
+    return out
+
+
+def _line_count(path: str) -> int:
+    try:
+        with open(path, "rb") as fh:
+            return fh.read().count(b"\n")
+    except Exception:
+        return 0
+
+
+def git_changes_scoped(root: str):
+    """git_changes(), but only files inside root (repo may be a parent)."""
+    import subprocess
+    files = git_changes(root)
+    if files is None:
+        return None
+    try:
+        top = subprocess.run(["git", "-C", root, "rev-parse",
+                              "--show-toplevel"], capture_output=True,
+                             text=True, timeout=10).stdout.strip()
+        prefix = os.path.relpath(root, top)
+    except Exception:
+        return files
+    if prefix in ("", "."):
+        return files
+    out = []
+    for f in files:
+        if f["file"] == prefix or f["file"].startswith(prefix + "/"):
+            g = dict(f)
+            g["file"] = f["file"][len(prefix) + 1:] \
+                if f["file"] != prefix else f["file"]
+            out.append(g)
+    return out
+
+
+def session_diff(root: str, baseline: dict) -> list:
+    """What actually changed in root since the baseline snapshot.
+
+    This is the truthful per-session file list: unlike a raw git diff
+    it ignores pre-existing dirty files and parent-repo noise, and it
+    sees files the agent created, edited or deleted during the task.
+    Line counts come from git for tracked files.
+    """
+    now = snapshot_files(root)
+    numstat = {f["file"]: f for f in (git_changes_scoped(root) or [])}
+    out = []
+    for rel, sig in now.items():
+        if rel not in baseline:
+            f = numstat.get(rel)
+            out.append({"file": rel,
+                        "add": f["add"] if f else _line_count(
+                            os.path.join(root, rel)),
+                        "del": f["del"] if f else 0})
+        elif baseline[rel] != sig:
+            f = numstat.get(rel)
+            out.append({"file": rel,
+                        "add": f["add"] if f else 1,
+                        "del": f["del"] if f else 0})
+    for rel in baseline:
+        if rel not in now:
+            f = numstat.get(rel)
+            out.append({"file": rel, "add": 0,
+                        "del": f["del"] if f else 1})
+    out.sort(key=lambda g: g["file"])
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Core: backend logic without any HTTP layer
 # ---------------------------------------------------------------------------
@@ -119,6 +204,7 @@ class Core:
                      "source": None, "asks": 0, "asking": False,
                      "last_ask": 0.0}
         self.results: dict | None = None
+        self._baseline: dict | None = None
         self.step_count = 0
         self.mode_override: dict | None = None
         self._classify_at = 0.0
@@ -184,11 +270,25 @@ class Core:
                          "source": None, "asks": 0, "asking": False,
                          "last_ask": 0.0}
         state = ev.get("state")
+        if state in BUSY and self._last_state not in BUSY + ("awaiting_user",) \
+                and self._baseline is None:
+            # a new task begins: remember the project's files so the
+            # end-of-session diff only shows this session's changes
+            root = self.project_path
+            self._baseline = {}
+
+            def _snap():
+                try:
+                    self._baseline = snapshot_files(root)
+                except Exception:
+                    self._baseline = {}
+            threading.Thread(target=_snap, daemon=True).start()
         if state in ("working", "tool_running"):
             self.step_count += 1
         if state in ("completed", "failed") and self._last_state in \
                 BUSY + ("awaiting_user",):
             self._finish_session(state)
+            self._baseline = None
         self._last_state = state or self._last_state
         with self._lock:
             self.adapter_state = dict(self.adapter.state)
@@ -328,10 +428,13 @@ class Core:
 
     # -- end-of-session results ------------------------------------------
     def _finish_session(self, final_state: str):
-        files = git_changes(self.project_path)
-        if files is None:
-            files = [{"file": f, "add": 1, "del": 0}
-                     for f in self.stats["files_touched"]]
+        if self._baseline is not None:
+            files = session_diff(self.project_path, self._baseline)
+        else:
+            files = git_changes_scoped(self.project_path)
+            if files is None:
+                files = [{"file": f, "add": 1, "del": 0}
+                         for f in self.stats["files_touched"]]
         self.results = {"files": files, "completion": None,
                         "safety": None, "source": "pending",
                         "final_state": final_state}
@@ -347,12 +450,14 @@ class Core:
             dels = sum(f["del"] for f in files)
             tools = sorted({str(ev.get("tool")) for ev in self.timeline
                             if ev.get("tool")})
+            reply = (st.get('last_reply') or st.get('activity') or '')[:2500]
             state_text = (
                 f"Task given to a coding agent: {st.get('task') or '(unknown)'}\n"
                 f"Plan: {done}/{len(plan)} steps done. "
-                f"Final state: {final_state}. "
-                f"Agent's final report: {st.get('activity') or ''}\n"
-                f"Changes in the git working tree: {len(files)} files, "
+                f"Final state: {final_state}.\n"
+                f"Agent's final reply: {reply}\n"
+                f"Files changed during this session (measured, not "
+                f"the whole repo state): {len(files)} files, "
                 f"+{adds} -{dels} lines. Files: "
                 + ", ".join(f"{f['file']} (+{f['add']}/-{f['del']})"
                             for f in files[:14])
@@ -631,6 +736,7 @@ PALETTES = {
         "text": "#f7f8f8", "body": "#d0d6e0", "muted": "#8a8f98",
         "faint": "#62666d", "square": (0.969, 0.973, 0.973),
         "vte_bg": (0.031, 0.035, 0.039), "vte_fg": (0.816, 0.839, 0.878),
+        "bg_rgb": (0.031, 0.035, 0.039),
     },
     "light": {
         "bg": "#f7f8f8", "surface": "#ffffff", "surface2": "#eef0f2",
@@ -638,6 +744,7 @@ PALETTES = {
         "text": "#0b0c0e", "body": "#34343a", "muted": "#62666d",
         "faint": "#8a8f98", "square": (0.078, 0.082, 0.09),
         "vte_bg": (0.969, 0.973, 0.973), "vte_fg": (0.11, 0.11, 0.12),
+        "bg_rgb": (0.969, 0.973, 0.973),
     },
 }
 
@@ -667,6 +774,7 @@ button.quiet:hover {{ color: {p['text']}; }}
 
 
 MODE_CAPTIONS = {
+    "done": ("DONE", "Done"),
     "blinky": ("BLINKY", "Idle"),
     "glitch": ("GLITCH", "Searching the system"),
     "trail": ("TRAIL", "Searching the web"),
@@ -685,6 +793,8 @@ def mode_for_agent(agent: dict) -> str:
     """Map the normalized agent state/tool to a square animation mode."""
     import re
     st = agent.get("state") or "idle"
+    if st == "completed":
+        return "done"
     if st == "awaiting_user":
         return "shuffle"
     if st in ("planning", "starting"):
@@ -801,7 +911,9 @@ def run_gui(project_arg: str | None) -> int:
         or str(ensure_demo_project())
     core = Core(project_path)
 
-    app = Gtk.Application(application_id="dev.meta.agentawareterminal",
+    app = Gtk.Application(
+        application_id=os.environ.get("AAT_APP_ID",
+                                      "dev.meta.agentawareterminal"),
                           flags=Gio.ApplicationFlags.FLAGS_NONE)
     S: dict = {"win": None, "overlay_on": False, "panel_on": False,
                "mode": "blinky", "user_closed_task": None,
@@ -835,9 +947,14 @@ def run_gui(project_arg: str | None) -> int:
 
         def _draw(self, _w, cr):
             alloc = self.get_allocation()
-            w, h = float(alloc.width), float(alloc.height)
-            if w < 10:
+            side = float(min(alloc.width, alloc.height))
+            if side < 10:
                 return False
+            ox = (alloc.width - side) / 2
+            oy = (alloc.height - side) / 2
+            cr.save()
+            cr.translate(ox, oy)
+            w = h = side
             if self.kind == "files":
                 n = max(len(self.files), 1)
                 import math
@@ -868,6 +985,7 @@ def run_gui(project_arg: str | None) -> int:
                 cr.set_line_width(1.2)
                 cr.rectangle(0.6, 0.6, w - 1.2, h - 1.2)
                 cr.stroke()
+            cr.restore()
             return False
 
     # ---------------- animated agent square ----------------
@@ -877,6 +995,9 @@ def run_gui(project_arg: str | None) -> int:
         def __init__(self):
             super().__init__()
             self.mode = "blinky"
+            self.prev_mode = None
+            self.trans = 1.0
+            self._am = 1.0
             self.t = 0.0
             self._timer = None
             self.set_size_request(280, 280)
@@ -884,7 +1005,9 @@ def run_gui(project_arg: str | None) -> int:
 
         def set_mode(self, mode):
             if mode != self.mode:
+                self.prev_mode = self.mode
                 self.mode = mode
+                self.trans = 0.0
                 self.queue_draw()
 
         def start(self):
@@ -898,6 +1021,10 @@ def run_gui(project_arg: str | None) -> int:
 
         def _step(self):
             self.t += 0.033
+            if self.trans < 1.0:
+                self.trans = min(1.0, self.trans + 0.033 / 0.45)
+            if self.mode == "done" and self.trans >= 1.0:
+                return True  # static: no animation in the done state
             self.queue_draw()
             return True
 
@@ -913,24 +1040,59 @@ def run_gui(project_arg: str | None) -> int:
 
         def _fill(self, cr, x, y, w, h, alpha, r=None):
             self._rr(cr, x, y, w, h, (0.045 * w) if r is None else r)
-            cr.set_source_rgba(*PAL["square"], alpha)
+            cr.set_source_rgba(*PAL["square"], alpha * self._am)
             cr.fill()
 
         def _draw(self, _w, cr):
+            alloc = self.get_allocation()
+            if min(alloc.width, alloc.height) < 10:
+                return False
+            cx, cy = alloc.width / 2, alloc.height / 2
+            if self.trans < 1.0 and self.prev_mode:
+                p = self.trans
+                ease = 1 - (1 - p) ** 2
+                cr.save()
+                cr.translate(cx, cy)
+                cr.scale(1 - 0.04 * ease, 1 - 0.04 * ease)
+                cr.translate(-cx, -cy)
+                self._am = 1 - ease
+                self._paint(cr, self.prev_mode)
+                cr.restore()
+                cr.save()
+                cr.translate(cx, cy)
+                cr.scale(0.96 + 0.04 * ease, 0.96 + 0.04 * ease)
+                cr.translate(-cx, -cy)
+                self._am = ease
+                self._paint(cr, self.mode)
+                cr.restore()
+                self._am = 1.0
+            else:
+                self._paint(cr, self.mode)
+            return False
+
+        def _paint(self, cr, mode):
             import colorsys
             import math
             import random
             alloc = self.get_allocation()
             S = float(min(alloc.width, alloc.height))
             if S < 10:
-                return False
+                return
             m = 0.03 * S
             x = (alloc.width - S) / 2 + m
             y = (alloc.height - S) / 2 + m
             s = S - 2 * m
             t = self.t
-            mode = self.mode
-            if mode == "blinky":
+            if mode == "done":
+                self._fill(cr, x, y, s, s, 0.95)
+                cr.set_source_rgba(*PAL["bg_rgb"], 0.95 * self._am)
+                cr.set_line_width(0.075 * s)
+                cr.set_line_cap(1)  # round
+                cr.move_to(x + 0.19 * s, y + 0.53 * s)
+                cr.line_to(x + 0.42 * s, y + 0.74 * s)
+                cr.line_to(x + 0.83 * s, y + 0.27 * s)
+                cr.stroke()
+            elif mode == "blinky":
                 phase = t % 3.4
                 sy = 1.0
                 if phase < 0.22:  # a calm blink
@@ -977,27 +1139,27 @@ def run_gui(project_arg: str | None) -> int:
                     self._fill(cr, px, py, cell, cell, pulse, r=0.03 * s)
                 self._rr(cr, x - 0.02 * s, y - 0.02 * s,
                          s + 0.04 * s, s + 0.04 * s, 0.05 * s)
-                cr.set_source_rgba(*PAL["square"], 0.25 + 0.15 * math.sin(t * 2.4))
+                cr.set_source_rgba(*PAL["square"], (0.25 + 0.15 * math.sin(t * 2.4)) * self._am)
                 cr.set_line_width(1.5)
                 cr.stroke()
             elif mode == "flash":
                 hue = (t * 0.045) % 1.0
                 r, g, b = colorsys.hsv_to_rgb(hue, 0.42, 0.88)
                 self._rr(cr, x, y, s, s, 0.045 * s)
-                cr.set_source_rgba(r, g, b, 0.28 + 0.1 * math.sin(t * 1.8))
+                cr.set_source_rgba(r, g, b, (0.28 + 0.1 * math.sin(t * 1.8)) * self._am)
                 cr.fill()
                 self._rr(cr, x, y, s, s, 0.045 * s)
-                cr.set_source_rgba(r, g, b, 0.9)
+                cr.set_source_rgba(r, g, b, 0.9 * self._am)
                 cr.set_line_width(max(2.0, 0.012 * s))
                 cr.stroke()
                 inner = 0.36 * s
                 self._rr(cr, x + (s - inner) / 2, y + (s - inner) / 2,
                          inner, inner, 0.04 * s)
-                cr.set_source_rgba(r, g, b, 0.55 + 0.3 * math.sin(t * 1.8))
+                cr.set_source_rgba(r, g, b, (0.55 + 0.3 * math.sin(t * 1.8)) * self._am)
                 cr.fill()
             else:  # build
                 self._rr(cr, x, y, s, s, 0.045 * s)
-                cr.set_source_rgba(*PAL["square"], 0.35)
+                cr.set_source_rgba(*PAL["square"], 0.35 * self._am)
                 cr.set_line_width(1.5)
                 cr.stroke()
                 cells = 4
@@ -1009,7 +1171,6 @@ def run_gui(project_arg: str | None) -> int:
                     alpha = 0.92 if i < filled else 0.07
                     self._fill(cr, x + col * cw + 2, y + row * cw + 2,
                                cw - 4, cw - 4, alpha, r=3)
-            return False
 
     # ---------------- window & terminal ----------------
     def build():
@@ -1132,6 +1293,9 @@ def run_gui(project_arg: str | None) -> int:
                              ("safety", "SAFE")):
             col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=7)
             sq = ResultSquare()
+            sq.set_hexpand(False)
+            sq.set_vexpand(False)
+            sq.set_halign(Gtk.Align.CENTER)
             col.pack_start(sq, False, False, 0)
             lab = Gtk.Label(label=caption)
             lab.get_style_context().add_class("res-label")

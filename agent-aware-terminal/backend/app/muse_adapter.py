@@ -75,6 +75,7 @@ class MuseAdapter(threading.Thread):
             "activity": "", "tool": None, "files": [], "plan": [],
             "source": "agent_event", "timestamp": _now(),
             "active_subagents": 0, "model": None, "task": "",
+            "last_reply": "",
         }
         self._stop = threading.Event()
         self._message_pending = False
@@ -240,6 +241,7 @@ class MuseAdapter(threading.Thread):
             if text:
                 self._message_pending = True
                 self._last_message = _short(text, 150)
+                self.state["last_reply"] = _short(text, 3000)
                 cur = self.state.get("state")
                 keep = cur if cur in ("starting", "planning", "working",
                                       "tool_running", "awaiting_user") \

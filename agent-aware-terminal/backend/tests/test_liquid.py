@@ -146,3 +146,20 @@ class AdapterStateTests(unittest.TestCase):
         ad._last_record_ts = _time.time() - 10
         ad._check_quiet()
         self.assertEqual(ad.state["state"], "completed")
+
+
+class SessionDiffTests(unittest.TestCase):
+    def test_only_session_changes_are_reported(self):
+        native = _load_native()
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "keep.py").write_text("old\n")
+            Path(tmp, "dirty.py").write_text("pre-existing dirt\n")
+            base = native.snapshot_files(tmp)
+            Path(tmp, "keep.py").write_text("old\nnew line\n")
+            Path(tmp, "created.py").write_text("a\nb\nc\n")
+            files = {f["file"]: f
+                     for f in native.session_diff(tmp, base)}
+            self.assertIn("keep.py", files)
+            self.assertIn("created.py", files)
+            self.assertEqual(files["created.py"]["add"], 3)
+            self.assertNotIn("dirty.py", files)  # untouched this session
