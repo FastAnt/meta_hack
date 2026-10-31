@@ -41,7 +41,7 @@ DATA_DIR = Path(os.environ.get(
     "AAT_DATA_DIR",
     Path.home() / ".local" / "share" / "agent-aware-terminal"))
 CACHE_DIR = DATA_DIR / "cache"
-BUSY = ("starting", "planning", "working", "tool_running")
+BUSY_STATES = BUSY = ("starting", "planning", "working", "tool_running")
 
 
 def ensure_demo_project() -> Path:
@@ -619,17 +619,39 @@ class Core:
         if self.sim_feed is not None and self.sim_feed.state:
             self.agent_state = dict(self.sim_feed.state)
             return
-        with self._lock:
-            adapter_state = self.adapter_state
-        if self.adapter.current_file and adapter_state:
-            merged = dict(adapter_state)
-            merged["agent"] = "muse"
-            self.agent_state = merged
-            return
         snap = self.snapshot
         inferred = snap.get("inferred") or {}
         fg_cmd = (snap.get("foreground") or {}).get("cmdline", "")
         cli = snap.get("agent_cli_detected")
+        # Is an adapter-less agent actually working right now?
+        obs_busy = False
+        if cli:
+            apid0 = snap.get("agent_pid")
+            obs_busy = inferred.get("state") in ("working",
+                                                 "tool_running")
+            if apid0:
+                fam = {apid0}
+                changed = True
+                tree0 = snap.get("process_tree") or []
+                while changed:
+                    changed = False
+                    for pr in tree0:
+                        if pr.get("ppid") in fam \
+                                and pr.get("pid") not in fam:
+                            fam.add(pr.get("pid"))
+                            changed = True
+                obs_busy = len(fam) > 1
+        with self._lock:
+            adapter_state = self.adapter_state
+        if self.adapter.current_file and adapter_state:
+            astate = adapter_state.get("state")
+            # Adapter facts win — unless Muse is just sitting there
+            # while another agent does the work.
+            if astate in BUSY_STATES + ("awaiting_user",) or not obs_busy:
+                merged = dict(adapter_state)
+                merged["agent"] = "muse"
+                self.agent_state = merged
+                return
         if cli:
             # An interactive agent (Codex, ...) IS the foreground
             # process even when it just sits at its prompt. It is
@@ -689,6 +711,25 @@ class Core:
                                   f"({sig[0]})")
             if sig[1] not in busy_states:
                 self._busy_started_at = None
+        # Agent vanished mid-turn (process exited while busy and
+        # never reported an ending): a brief interrupted window
+        # beats silently falling back to the float.
+        prev_view = getattr(self, "_agent_view", (None, None))
+        cur_agent = self.agent_state.get("agent")
+        if prev_view[0] and prev_view[1] in (
+                "working", "tool_running", "planning", "starting") \
+                and not cur_agent:
+            self._interrupt_until = time.time() + 5
+            self._interrupt_agent = prev_view[0]
+            self.dlog("mode", "agent vanished mid-turn -> interrupted "
+                              f"({prev_view[0]})")
+        self._agent_view = (cur_agent, self.agent_state.get("state"))
+        if not cur_agent and time.time() < getattr(
+                self, "_interrupt_until", 0):
+            self.agent_state = dict(self.agent_state)
+            self.agent_state.update({
+                "agent": self._interrupt_agent, "interrupted": True,
+                "activity": "Agent exited mid-turn"})
         if self.agent_state.get("state") == "idle" \
                 and self.agent_state.get("agent") \
                 and self.agent_state.get("agent") == self._done_agent \
@@ -1036,10 +1077,14 @@ def mode_for_agent(agent: dict) -> str:
     """Map the normalized agent state/tool to a square animation mode."""
     import re
     st = agent.get("state") or "idle"
+    if agent.get("interrupted"):
+        return "fail"
     if st == "completed" or agent.get("turn_done"):
         return "done"
     if st == "awaiting_user":
         return "question" if agent.get("needs") == "answer" else "shuffle"
+    if st == "failed":
+        return "fail"
     lf = agent.get("last_failure")
     if lf and st in ("working", "tool_running"):
         at = lf.get("at")

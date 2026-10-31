@@ -1,0 +1,9 @@
+{"sleep": 0, "state": "idle", "expect": "blinky"}
+{"sleep": 0.2, "state": "starting", "expect": "flash"}
+{"sleep": 0.2, "state": "planning", "expect": "flash"}
+{"sleep": 0.2, "state": "tool_running", "tool": "bash", "command": "make all", "expect": "compile"}
+{"sleep": 0.2, "state": "tool_running", "tool": "bash", "command": "pytest -q", "expect": "test"}
+{"sleep": 0.2, "state": "awaiting_user", "needs": "approval", "expect": "shuffle"}
+{"sleep": 0.2, "state": "completed", "expect": "done"}
+{"sleep": 0.2, "state": "failed", "expect": "fail"}
+{"sleep": 0.2, "state": "idle", "expect": "blinky"}

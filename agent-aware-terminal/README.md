@@ -305,3 +305,11 @@ Only Muse has a log adapter. Other agent CLIs found in the terminal
    what the agent is doing (thinking, installing, compiling, asking
    a question, ...). The deterministic layer always wins where it
    has facts; the screen judgment only fills the gaps.
+
+## Tests
+
+- `python3 -m unittest discover -s backend/tests` — unit and
+  scenario tests: startup/history replay, every square state,
+  adapter lifecycle, scoring guards, source priority.
+- `python3 tools/check_states.py` — boots the built binary once
+  per mock state and asserts the reached mode via the decision log.
