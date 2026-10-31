@@ -28,11 +28,14 @@ FILE_RE = re.compile(
     r"[\w./\-]+\.(?:py|ts|tsx|js|jsx|rs|go|dart|java|kt|md|json|toml|yaml|yml|sh|css|html)\b"
 )
 TOOL_STATE = {
-    "bash": "tool_running", "edit": "tool_running", "file_edit": "tool_running",
-    "write": "tool_running", "file_write": "tool_running",
+    "bash": "tool_running", "bash_input": "tool_running",
+    "edit": "tool_running", "file_edit": "tool_running",
+    "edit_file": "tool_running", "write": "tool_running",
+    "file_write": "tool_running", "write_file": "tool_running",
     "read": "tool_running", "file_read": "tool_running",
-    "grep": "tool_running", "glob": "tool_running", "web_fetch": "tool_running",
-    "web_search": "tool_running",
+    "read_file": "tool_running", "read_skill": "tool_running",
+    "grep": "tool_running", "glob": "tool_running", "search": "tool_running",
+    "web_fetch": "tool_running", "web_search": "tool_running",
 }
 
 
@@ -197,9 +200,16 @@ class MuseAdapter(threading.Thread):
             self._emit(state="planning", plan=plan,
                        activity=f"Plan: {_short(current, 120)}" if current else "Plan updated")
         elif kind in ("reasoning_summary_delta", "reasoning_summary_committed"):
+            # The model is thinking: that is the planning state, not
+            # generic work (the square shows COLOR FLASH for it).
             text = ev.get("text", "")
+            now = time.time()
+            if kind == "reasoning_summary_delta" and \
+                    now - getattr(self, "_last_reasoning", 0) < 1.5:
+                return
+            self._last_reasoning = now
             if text:
-                self._emit(state="working", activity=_short(text, 150))
+                self._emit(state="planning", activity=_short(text, 150))
         elif kind == "assistant_tool_calls_committed":
             for call in ev.get("tool_calls") or []:
                 name = call.get("name") or "tool"
@@ -211,9 +221,16 @@ class MuseAdapter(threading.Thread):
                            tool=name, files=files,
                            activity=f"{name}: {_short(files[0] if files else args, 110)}")
         elif kind == "assistant_message_committed":
+            # An assistant message is not by itself a request for the
+            # user: keep the current state, only refresh the activity.
+            # (Approval waits arrive as approval_wait events.)
             text = ev.get("text", "")
             if text:
-                self._emit(state="awaiting_user", activity=_short(text, 150))
+                cur = self.state.get("state")
+                keep = cur if cur in ("starting", "planning", "working",
+                                      "tool_running", "awaiting_user") \
+                    else "working"
+                self._emit(state=keep, activity=_short(text, 150))
         elif kind == "model_failure_terminal_intent":
             self._emit(state="failed",
                        activity=_short(ev.get("reason") or "Agent failed", 150))

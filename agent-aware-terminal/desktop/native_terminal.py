@@ -633,6 +633,11 @@ MODE_CAPTIONS = {
 }
 
 
+WEB_TOOLS = {"web_search", "web_fetch"}
+LOCAL_SEARCH_TOOLS = {"search", "grep", "glob", "read_file", "file_read",
+                      "read", "read_skill", "list_dir", "list_files"}
+
+
 def mode_for_agent(agent: dict) -> str:
     """Map the normalized agent state/tool to a square animation mode."""
     import re
@@ -642,9 +647,13 @@ def mode_for_agent(agent: dict) -> str:
     if st in ("planning", "starting"):
         return "flash"
     if st in ("working", "tool_running"):
-        text = f"{agent.get('tool') or ''} {agent.get('activity') or ''}".lower()
-        if re.search(r"web|internet|https?://|\burl\b|fetch", text) \
-                and "file" not in text:
+        tool = (agent.get("tool") or "").lower()
+        if tool in WEB_TOOLS:
+            return "trail"
+        if tool in LOCAL_SEARCH_TOOLS:
+            return "glitch"
+        text = f"{tool} {agent.get('activity') or ''}".lower()
+        if re.search(r"web_search|web_fetch|search the web|internet", text):
             return "trail"
         if re.search(r"search|grep|glob|find|read|list|scan", text):
             return "glitch"
@@ -710,6 +719,13 @@ MOCK = os.environ.get("AAT_MOCKSTATE", "")
 
 
 def run_gui(project_arg: str | None) -> int:
+    # Input method: without GTK_IM_MODULE the frozen app falls back to a
+    # bare context and layout/IBus language switching is lost. Ubuntu
+    # runs IBus (XMODIFIERS=@im=ibus) — enable it explicitly.
+    if not os.environ.get("GTK_IM_MODULE"):
+        import glob as _glob
+        if _glob.glob("/usr/lib/*/gtk-3.0/3.0.0/immodules/im-ibus.so"):
+            os.environ["GTK_IM_MODULE"] = "ibus"
     import gi
     gi.require_version("Gtk", "3.0")
     gi.require_version("Gdk", "3.0")
@@ -746,7 +762,7 @@ def run_gui(project_arg: str | None) -> int:
                           flags=Gio.ApplicationFlags.FLAGS_NONE)
     S: dict = {"win": None, "overlay_on": False, "panel_on": False,
                "mode": "blinky", "user_closed_task": None,
-               "results_shown_task": None}
+               "results_shown_task": None, "layout": "overlay"}
 
     # ---------------- end-of-session result squares ----------------
     class ResultSquare(Gtk.DrawingArea):
@@ -969,12 +985,17 @@ def run_gui(project_arg: str | None) -> int:
         btn_overlay = Gtk.Button(label="Overlay")
         btn_overlay.connect("clicked", lambda *_: set_overlay(True))
         header.pack_end(btn_overlay)
+        S["btn_split"] = Gtk.ToggleButton(label="Split")
+        S["btn_split"].connect("toggled", lambda b: set_layout(
+            "split" if b.get_active() else "overlay"))
+        header.pack_end(S["btn_split"])
         S["pill"] = Gtk.Label(label="idle")
         header.pack_end(S["pill"])
 
         menu = Gio.Menu()
         menu.append("Open project…", "app.open-project")
         menu.append("Run Muse with a task", "app.muse-task")
+        menu.append("Split screen", "app.split")
         menu.append("History & diagnostics", "app.panel")
         menu.append("Simulate events (dev)", "app.simulate")
         menu.append("Quit", "app.quit")
@@ -997,8 +1018,12 @@ def run_gui(project_arg: str | None) -> int:
         pty_info = VtePtyInfo(vte)
 
         overlay = Gtk.Overlay()
-        overlay.add(scrolled)
+        paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        paned.pack1(scrolled, True, True)
+        overlay.add(paned)
         win.add(overlay)
+        S["root_overlay"] = overlay
+        S["paned"] = paned
 
         # ---- minimal overlay: system-theme surface + agent square ----
         scene = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -1077,7 +1102,8 @@ def run_gui(project_arg: str | None) -> int:
         scene.pack_start(S["hint"], False, False, 0)
 
         def _fit_square(_w, alloc):
-            side = int(min(0.30 * alloc.width, 0.58 * alloc.height))
+            factor = 0.58 if S.get("layout") == "split" else 0.30
+            side = int(min(factor * alloc.width, 0.58 * alloc.height))
             if side > 40 and S["square"].get_size_request().width != side:
                 S["square"].set_size_request(side, side)
         scene.connect("size-allocate", _fit_square)
@@ -1146,17 +1172,54 @@ def run_gui(project_arg: str | None) -> int:
         GLib.timeout_add(280, tick)
         if os.environ.get("AAT_OPEN_OVERLAY"):
             GLib.timeout_add(1300, lambda: (set_overlay(True), False)[1])
+        if os.environ.get("AAT_SPLIT"):
+            GLib.timeout_add(900, lambda: (
+                S["btn_split"].set_active(True), set_overlay(True), False)[-1])
 
     # ---------------- actions ----------------
     def set_overlay(show: bool):
         S["overlay_on"] = show
-        S["scene"].set_visible(show)
+        scene = S["scene"]
+        if S["layout"] == "split":
+            paned = S["paned"]
+            if show:
+                if scene.get_parent() is not paned:
+                    if scene.get_parent() is not None:
+                        scene.get_parent().remove(scene)
+                    paned.pack2(scene, True, False)
+                    paned.set_position(max(S["win"].get_size()[0] // 2, 200))
+                scene.set_visible(True)
+                S["square"].start()
+                tick()
+            else:
+                if scene.get_parent() is paned:
+                    paned.remove(scene)
+                S["square"].stop()
+                S["vte"].grab_focus()
+            return
+        scene.set_visible(show)
         if show:
             S["square"].start()
             tick()
         else:
             S["square"].stop()
             S["vte"].grab_focus()
+
+    def set_layout(mode: str):
+        """overlay = visualization floats over the terminal;
+        split = terminal | visualization side by side, 50/50."""
+        if mode == S.get("layout"):
+            return
+        S["layout"] = mode
+        scene = S["scene"]
+        if scene.get_parent() is not None:
+            scene.get_parent().remove(scene)
+        if mode == "overlay":
+            S["root_overlay"].add_overlay(scene)
+        if S["overlay_on"]:
+            set_overlay(True)
+        elif mode == "overlay":
+            scene.set_visible(False)
 
     def user_close():
         """The user explicitly leaves the overlay: never auto-reopen
@@ -1176,6 +1239,9 @@ def run_gui(project_arg: str | None) -> int:
                      (event.state & Gdk.ModifierType.SHIFT_MASK)
         if ctrl_shift and kv in (Gdk.KEY_O, Gdk.KEY_o):
             set_overlay(not S["overlay_on"])
+            return True
+        if ctrl_shift and kv in (Gdk.KEY_S, Gdk.KEY_s):
+            S["btn_split"].set_active(not S["btn_split"].get_active())
             return True
         if kv == Gdk.KEY_Escape:
             if S["panel_on"]:
@@ -1220,6 +1286,8 @@ def run_gui(project_arg: str | None) -> int:
     add_action("open-project", act_open_project)
     add_action("muse-task", act_muse_task)
     add_action("panel", lambda: toggle_panel())
+    add_action("split", lambda: S["btn_split"].set_active(
+        not S["btn_split"].get_active()))
     add_action("simulate", lambda: core.simulate())
     add_action("quit", lambda: app.quit())
 

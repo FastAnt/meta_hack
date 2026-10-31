@@ -136,6 +136,15 @@ Without a Liquid key both scores fall back to transparent heuristics
 (plan completion ratio; deletion ratio and file count), labelled as such
 in Diagnostics.
 
+Two layouts: **overlay** (the visualization floats over the terminal)
+and **split screen** (header Split button or `Ctrl+Shift+S`) — terminal
+on the left, the same visualization on the right, 50/50 with a draggable
+divider. The System-1 gate drives both layouts equally.
+
+Input languages: the app explicitly enables the system IBus input
+method (`GTK_IM_MODULE=ibus`) so keyboard-layout switching and IM
+languages work in the terminal like in any other GTK app.
+
 Palettes are Linear-style token stacks (dark: `#08090a` canvas, `#f7f8f8`
 text, 1px `#23252a` borders; light: the same roles inverted). The theme is
 read from GTK settings at startup (`AAT_THEME=dark|light` overrides, for
