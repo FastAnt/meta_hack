@@ -183,3 +183,5 @@ class ModeClassificationTests(unittest.TestCase):
                             "command": "ls -la"}), "build")
         self.assertEqual(m({"state": "tool_running", "tool": "web_fetch",
                             "command": None}), "trail")
+        self.assertEqual(m({"state": "tool_running", "tool": "bash",
+                            "command": "rm -rf cpp_app"}), "delete")

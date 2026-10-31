@@ -774,6 +774,7 @@ button.quiet:hover {{ color: {p['text']}; }}
 
 
 MODE_CAPTIONS = {
+    "delete": ("DELETING", "Deleting files"),
     "compile": ("COMPILING", "Compiling"),
     "link": ("LINKING", "Linking"),
     "copy": ("COPYING", "Copying files"),
@@ -809,6 +810,8 @@ def mode_for_agent(agent: dict) -> str:
         act = (agent.get("activity") or "").lower()
         if cmd:
             # What kind of shell work is this? (facts from the command)
+            if re.search(r"(^|[;&|]\s*)(rm|unlink|shred|rmdir)\b", cmd):
+                return "delete"
             if re.search(r"(^|[;&|]\s*)(ld|lld|gold|mold)\b", cmd) \
                     or "linking" in act \
                     or (re.search(r"\b(gcc|g\+\+|clang)\b", cmd)
@@ -1331,6 +1334,37 @@ def run_gui(project_arg: str | None) -> int:
                     hh = sz * squash
                     self._fill(cr, sx, yy + (sz - hh), sz, hh,
                                0.92 * fade, r=0.02 * s)
+            elif mode == "delete":
+                # Deleting: the file square trembles, breaks into a
+                # 3x3 of crumbs that rain down and fade away.
+                self._fill(cr, x, y, s, s, 0.08)
+                self._rr(cr, x, y, s, s, 0.045 * s)
+                cr.set_source_rgba(*PAL["square"], 0.35 * self._am)
+                cr.set_line_width(1.5)
+                cr.stroke()
+                inner = 0.34 * s
+                ix, iy = x + (s - inner) / 2, y + (s - inner) / 2
+                cyc = t % 2.6
+                if cyc < 0.7:
+                    shake = 0.006 * s * math.sin(t * 42) * (cyc / 0.7)
+                    self._fill(cr, ix + shake, iy, inner, inner, 0.92,
+                               r=0.03 * s)
+                elif cyc < 2.0:
+                    fp = (cyc - 0.7) / 1.3
+                    mini = inner / 3
+                    for r_i in range(3):
+                        for c_i in range(3):
+                            delay = 0.08 * ((r_i * 3 + c_i) % 4)
+                            lp = max(0.0, min((fp - delay) / (1 - delay), 1.0))
+                            fall = 0.55 * s * lp ** 2
+                            drift = (c_i - 1) * 0.03 * s * lp
+                            self._fill(
+                                cr, ix + c_i * mini + 1 + drift,
+                                iy + r_i * mini + 1 + fall,
+                                mini - 2, mini - 2,
+                                0.92 * (1 - lp) * (1 if fp > delay else 0),
+                                r=2)
+                # else: gone — a beat of emptiness, then the next file
             else:  # build — writing code/files
                 # A small square is written line by line, becomes
                 # solid, then files itself away to the left; repeat.
@@ -1748,6 +1782,10 @@ def run_gui(project_arg: str | None) -> int:
                       "command": "cp -r assets/ dist/assets/",
                       "activity": "bash: cp -r assets/ dist/assets/",
                       "files": []}, "storage"),
+            "delete": ({"state": "tool_running", "tool": "bash",
+                        "command": "rm -rf cpp_app",
+                        "activity": "bash: rm -rf cpp_app",
+                        "files": []}, None),
             "install": ({"state": "tool_running", "tool": "bash",
                          "command": "pip install tenacity",
                          "activity": "bash: pip install tenacity",
