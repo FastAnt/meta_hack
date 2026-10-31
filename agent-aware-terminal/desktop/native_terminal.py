@@ -1533,7 +1533,8 @@ def run_gui(project_arg: str | None) -> int:
                "mode": "blinky", "user_closed_task": None,
                "results_shown_task": None, "layout": "overlay",
                "left_override": None, "_agent_busy": False,
-               "_busy_since": None,
+               "_busy_since": None, "_busy_end": None,
+               "_busy_since_keep": None,
                "_square_mode": "blinky"}
 
     # ---------------- end-of-session result squares ----------------
@@ -3280,11 +3281,32 @@ def run_gui(project_arg: str | None) -> int:
             S["mode"] = mode
             S["square"].set_mode(mode)
             S["_square_mode"] = mode
-            busy_now = state in BUSY_STATES
-            if busy_now != S.get("_agent_busy"):
-                S["_agent_busy"] = busy_now
-                S["_busy_since"] = time.time() if busy_now else None
-                S["left_override"] = None  # new phase: auto resumes
+            # "Busy" for the attention model: log states where we
+            # have them, and the screen-evidenced visual mode for
+            # adapter-less agents (Codex reasons and browses
+            # childless — no processes to observe, but the square
+            # already knows it is working).
+            busy_now = state in BUSY_STATES or (
+                agent.get("source") == "heuristic"
+                and mode not in ("blinky", "shuffle", "question",
+                                 "done", "fail", "fail_compile",
+                                 "fail_link", "fail_test"))
+            if busy_now and not S.get("_agent_busy"):
+                # A busy blip (< 4 s gap in the screen verdicts) is
+                # the same phase: keep the clock and the user's
+                # manual pane choice.
+                resumed = S.get("_busy_end") \
+                    and time.time() - S["_busy_end"] < 4 \
+                    and S.get("_busy_since_keep")
+                if not resumed:
+                    S["_busy_since"] = time.time()
+                    S["left_override"] = None  # new phase: auto
+                S["_agent_busy"] = True
+            elif not busy_now and S.get("_agent_busy"):
+                S["_agent_busy"] = False
+                S["_busy_end"] = time.time()
+                S["_busy_since_keep"] = S.get("_busy_since")
+                S["_busy_since"] = None
             apply_left()
             if S.get("_last_mode") != mode:
                 core.dlog("mode", f"{S.get('_last_mode') or '—'} -> {mode} "
