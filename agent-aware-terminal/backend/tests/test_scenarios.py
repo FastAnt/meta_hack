@@ -257,6 +257,12 @@ class CoreScenarioTests(unittest.TestCase):
                               "process_tree": [],
                               "inferred": {"state": "idle"}}
         self.core.refresh_agent_state()
+        # No instant verdict: the ending is resolved from the
+        # screen within seconds; unresolved, it times out.
+        self.assertTrue(getattr(self.core, "_vanish", None))
+        self.assertFalse(self.core.agent_state.get("interrupted"))
+        self.core._vanish["at"] = time.time() - 20
+        self.core.refresh_agent_state()
         self.assertTrue(self.core.agent_state.get("interrupted"))
         self.assertEqual(
             self.native.mode_for_agent(self.core.agent_state), "fail")
@@ -372,3 +378,99 @@ class ScreenTurnTests(CoreScenarioTests):
         core._screen_turn_tick("codex", "idle_at_prompt", 0.8)
         self._codex_idle_snapshot()
         self.assertFalse(core.agent_state.get("turn_done"))
+
+
+class StickyOutcomeTests(CoreScenarioTests):
+    def _drive_done(self):
+        codex = {"pid": 10, "ppid": 1, "comm": "codex",
+                 "cmdline": "codex --yolo"}
+        child = {"pid": 11, "ppid": 10, "comm": "rg",
+                 "cmdline": "rg --files"}
+        self.core.snapshot = self._snap([codex, child], 10)
+        self.core.refresh_agent_state()
+        self.core._busy_started_at = time.time() - 10
+        self.core.snapshot = self._snap([codex], 10)
+        self.core.refresh_agent_state()
+
+    def test_done_sticks_across_refreshes(self):
+        self._drive_done()
+        self.assertTrue(self.core.agent_state.get("turn_done"))
+        for _ in range(3):
+            self.core.refresh_agent_state()
+            self.assertTrue(self.core.agent_state.get("turn_done"))
+            self.assertEqual(
+                self.native.mode_for_agent(self.core.agent_state),
+                "done")
+
+    def test_new_turn_clears_outcome(self):
+        self._drive_done()
+        codex = {"pid": 10, "ppid": 1, "comm": "codex",
+                 "cmdline": "codex --yolo"}
+        child = {"pid": 11, "ppid": 10, "comm": "rg",
+                 "cmdline": "rg --files"}
+        self.core.snapshot = self._snap([codex, child], 10)
+        self.core.refresh_agent_state()
+        self.assertEqual(self.core.agent_state["state"], "working")
+        self.assertFalse(self.core.agent_state.get("turn_done"))
+
+    def test_new_agent_process_clears_outcome(self):
+        self._drive_done()
+        codex2 = {"pid": 20, "ppid": 1, "comm": "codex",
+                  "cmdline": "codex --yolo"}
+        self.core.snapshot = self._snap([codex2], 20)
+        self.core.refresh_agent_state()
+        self.assertFalse(self.core.agent_state.get("turn_done"))
+        self.assertEqual(
+            self.native.mode_for_agent(self.core.agent_state), "blinky")
+
+    def test_sticky_modes_in_matrix(self):
+        native = self.native
+        self.assertEqual(native.mode_for_agent(
+            {"state": "idle", "sticky_outcome": "done"}), "done")
+        self.assertEqual(native.mode_for_agent(
+            {"state": "idle", "sticky_outcome": "fail"}), "fail")
+
+
+class VanishResolutionTests(CoreScenarioTests):
+    def _drive_vanish(self):
+        codex = {"pid": 10, "ppid": 1, "comm": "codex",
+                 "cmdline": "codex --yolo"}
+        child = {"pid": 11, "ppid": 10, "comm": "rg",
+                 "cmdline": "rg --files"}
+        self.core.snapshot = self._snap([codex, child], 10)
+        self.core.refresh_agent_state()
+        self.assertEqual(self.core.agent_state["state"], "working")
+        self.core.snapshot = {"cwd": self._tmp,
+                              "foreground": {"process": "bash"},
+                              "agent_cli_detected": None,
+                              "process_tree": [],
+                              "inferred": {"state": "idle"}}
+        self.core.refresh_agent_state()
+        self.assertTrue(getattr(self.core, "_vanish", None))
+        self.assertFalse(self.core.agent_state.get("interrupted"))
+
+    def test_finished_screen_resolves_to_sticky_done(self):
+        self._drive_vanish()
+        self.core._screen_turn_tick("codex", "thinking", 0.9)
+        self.core._screen_turn_since = time.time() - 30
+        self.core._screen_turn_tick("codex", "finished", 0.8)
+        self.core.refresh_agent_state()
+        self.assertEqual(
+            self.native.mode_for_agent(self.core.agent_state), "done")
+
+    def test_bare_prompt_resolves_to_interrupted(self):
+        self._drive_vanish()
+        self.core._screen_turn_tick("codex", "thinking", 0.9)
+        self.core._screen_turn_since = time.time() - 30
+        self.core._screen_turn_tick("codex", "idle_at_prompt", 0.8)
+        self.core._vanish["at"] = time.time() - 7
+        self.core.refresh_agent_state()
+        self.assertTrue(self.core.agent_state.get("interrupted"))
+        self.assertEqual(
+            self.native.mode_for_agent(self.core.agent_state), "fail")
+
+    def test_unresolved_vanish_times_out_to_interrupted(self):
+        self._drive_vanish()
+        self.core._vanish["at"] = time.time() - 20
+        self.core.refresh_agent_state()
+        self.assertTrue(self.core.agent_state.get("interrupted"))

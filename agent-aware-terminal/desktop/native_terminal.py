@@ -192,8 +192,7 @@ class Core:
                              "screen_err": 0, "last_choice": "",
                              "last_conf": 0.0}
         self._prev_sig = None
-        self._done_until = 0.0
-        self._done_agent = None
+        self._last_outcome = None  # {"key": ..., "mode": done|fail}
         self._busy_started_at = None
         self.liquid_check = {"status": "pending", "detail": ""}
         self.dlog("boot", f"Liquid System-1: "
@@ -451,19 +450,44 @@ class Core:
         if choice == "failed":
             if getattr(self, "_screen_turn_active", False):
                 self._screen_turn_failed = True
+            vanish = getattr(self, "_vanish", None)
+            if vanish and vanish["agent"] == agent_name:
+                # Not instant: error lines may still scroll past
+                # before a successful summary. Remember and let
+                # the refresh loop resolve with the last verdict.
+                vanish["last_choice"] = "failed"
             return
         if choice in ("finished", "idle_at_prompt"):
             active = getattr(self, "_screen_turn_active", False)
             started = getattr(self, "_screen_turn_since", 0) or 0
+            vanish = getattr(self, "_vanish", None)
+            if vanish and vanish["agent"] == agent_name:
+                # The processes already proved a turn happened;
+                # a success summary resolves at once, anything
+                # else is remembered for the refresh loop.
+                if choice == "finished" and conf >= 0.25:
+                    self._last_outcome = {
+                        "key": vanish.get("key"),
+                        "agent": agent_name, "mode": "done"}
+                    self._vanish = None
+                    self.dlog("mode", "vanished agent finished -> "
+                                      f"sticky done ({agent_name})")
+                    self._screen_turn_active = False
+                else:
+                    vanish["last_choice"] = choice
+                return
             if active and agent_name == getattr(
                     self, "_screen_turn_agent", None) \
                     and time.time() - started >= 5 \
                     and not getattr(self, "_screen_turn_failed", False) \
                     and (choice == "idle_at_prompt" or conf >= 0.25):
-                self._done_until = time.time() + 7
-                self._done_agent = agent_name
-                self.dlog("mode", "screen turn ended -> done window "
-                                  f"({agent_name}, via {choice})")
+                if True:
+                    self._last_outcome = {
+                        "key": getattr(self, "_agent_key_now", None),
+                        "agent": agent_name, "mode": "done"}
+                    self.dlog("mode", "screen turn ended -> sticky "
+                                      f"done ({agent_name}, "
+                                      f"via {choice})")
             self._screen_turn_active = False
 
     def classify_tick(self, agent: dict, screen: str = ""):
@@ -567,7 +591,16 @@ class Core:
         threading.Thread(target=_ask, daemon=True).start()
 
     # -- end-of-session results ------------------------------------------
+    def clear_outcome(self, reason: str):
+        if self._last_outcome:
+            self._last_outcome = None
+            self.dlog("mode", f"outcome cleared ({reason})")
+
     def _finish_session(self, final_state: str):
+        self._last_outcome = {
+            "key": f"muse:{self.adapter.state.get('session_id') or self._session_key or ''}",
+            "agent": "muse",
+            "mode": "done" if final_state == "completed" else "fail"}
         if self._baseline is not None:
             files = session_diff(self.project_path, self._baseline)
         else:
@@ -728,6 +761,12 @@ class Core:
                 "command": fg_cmd,
                 "source": "heuristic", "files": [], "plan": [],
             }
+        # Identity of the current agent session: the end-of-turn
+        # outcome sticks to it; a new process/session floats again.
+        _ag = self.agent_state.get("agent")
+        akey = (f"{_ag}:{self.agent_state.get('session_id') or (self.snapshot or {}).get('agent_pid') or self.adapter.current_file or ''}"
+                if _ag else None)
+        self._agent_key_now = akey
         sig = (self.agent_state.get("agent"), self.agent_state.get("state"),
                self.agent_state.get("source"))
         if sig != self._prev_sig:
@@ -739,17 +778,19 @@ class Core:
             if sig[1] in busy_states:
                 if self._busy_started_at is None:
                     self._busy_started_at = time.time()
-                self._done_until = 0.0
+                if self._last_outcome:
+                    self._last_outcome = None
+                    self.dlog("mode", "outcome cleared (new turn)")
             elif prev and prev[0] and prev[0] == sig[0] \
                     and prev[1] in busy_states and sig[1] == "idle" \
                     and sig[2] == "heuristic" \
                     and self._busy_started_at \
                     and time.time() - self._busy_started_at >= 5:
-                # An adapter-less agent finished a real turn: give
-                # the DONE check its moment before the float.
-                self._done_until = time.time() + 7
-                self._done_agent = sig[0]
-                self.dlog("mode", f"turn ended -> done window "
+                # An adapter-less agent finished a real turn: the
+                # outcome sticks until the next turn / new session.
+                self._last_outcome = {"key": self._agent_key_now,
+                                      "agent": sig[0], "mode": "done"}
+                self.dlog("mode", f"turn ended -> sticky done "
                                   f"({sig[0]})")
             if sig[1] not in busy_states:
                 self._busy_started_at = None
@@ -760,24 +801,69 @@ class Core:
         cur_agent = self.agent_state.get("agent")
         if prev_view[0] and prev_view[1] in (
                 "working", "tool_running", "planning", "starting") \
-                and not cur_agent:
-            self._interrupt_until = time.time() + 5
-            self._interrupt_agent = prev_view[0]
-            self.dlog("mode", "agent vanished mid-turn -> interrupted "
+                and not cur_agent \
+                and not getattr(self, "_vanish", None):
+            # Finished-and-exited looks exactly like died-mid-turn
+            # for one tick. Give the screen a few seconds to tell
+            # the ending before calling it an interruption.
+            self._vanish = {"agent": prev_view[0], "at": time.time(),
+                            "key": getattr(self, "_agent_key_now", None)}
+            self.dlog("mode", "agent vanished; resolving ending "
                               f"({prev_view[0]})")
         self._agent_view = (cur_agent, self.agent_state.get("state"))
+        if cur_agent:
+            self._vanish = None
+        vanish = getattr(self, "_vanish", None)
+        if vanish and not cur_agent:
+            age = time.time() - vanish["at"]
+            last = vanish.get("last_choice")
+            if age > 6 and last == "failed":
+                self._last_outcome = {
+                    "key": vanish.get("key"),
+                    "agent": vanish["agent"], "mode": "fail"}
+                self._vanish = None
+                self.dlog("mode", "vanished agent failed -> sticky "
+                                  f"fail ({vanish['agent']})")
+            elif age > 6 and last == "idle_at_prompt":
+                self._interrupt_until = time.time() + 5
+                self._interrupt_agent = vanish["agent"]
+                self._vanish = None
+                self.dlog("mode", "agent vanished mid-turn -> "
+                                  f"interrupted ({vanish['agent']})")
+            elif age > 14:
+                self._interrupt_until = time.time() + 5
+                self._interrupt_agent = vanish["agent"]
+                self._vanish = None
+                self.dlog("mode", "agent vanished mid-turn -> "
+                                  "interrupted "
+                                  f"({vanish['agent']}, unresolved)")
+
         if not cur_agent and time.time() < getattr(
                 self, "_interrupt_until", 0):
             self.agent_state = dict(self.agent_state)
             self.agent_state.update({
                 "agent": self._interrupt_agent, "interrupted": True,
                 "activity": "Agent exited mid-turn"})
-        if self.agent_state.get("state") == "idle" \
-                and self.agent_state.get("agent") \
-                and self.agent_state.get("agent") == self._done_agent \
-                and time.time() < self._done_until:
-            self.agent_state = dict(self.agent_state)
-            self.agent_state["turn_done"] = True
+        oc = self._last_outcome
+        if oc and oc.get("key") is None:
+            oc["key"] = akey
+        if oc and akey is not None and oc.get("key") != akey:
+            self._last_outcome = None
+            oc = None
+            self.dlog("mode", "outcome cleared (new agent session)")
+        if oc and self.agent_state.get("state") == "idle":
+            if self.agent_state.get("agent"):
+                self.agent_state = dict(self.agent_state)
+                if oc["mode"] == "done":
+                    self.agent_state["turn_done"] = True
+                self.agent_state["sticky_outcome"] = oc["mode"]
+            else:
+                # Agent exited after finishing: keep showing how
+                # it ended until something new happens.
+                self.agent_state = {
+                    "agent": oc.get("agent"), "state": "idle",
+                    "sticky_outcome": oc["mode"],
+                    "source": "heuristic", "files": [], "plan": []}
 
     # -- Muse Spark / Muse Image (threads) ------------------------------
     def enrich_async(self):
@@ -1127,6 +1213,11 @@ def mode_for_agent(agent: dict) -> str:
         return "question" if agent.get("needs") == "answer" else "shuffle"
     if st == "failed":
         return "fail"
+    if st == "idle":
+        # The end of a turn sticks: no drifting back to the float.
+        so = agent.get("sticky_outcome")
+        if so in ("done", "fail"):
+            return so
     lf = agent.get("last_failure")
     if lf and st in ("working", "tool_running"):
         at = lf.get("at")
@@ -2604,11 +2695,24 @@ def run_gui(project_arg: str | None) -> int:
 
         if S["overlay_on"]:
             mode = mode_for_agent(agent)
+            if getattr(core, "_vanish", None) and S.get("_last_mode"):
+                # Ending unresolved: hold the last pose briefly.
+                mode = S["_last_mode"]
             # System-1 fills the gaps: generic "working" with no tool
             # is ambiguous — d1.1 classifies the real activity.
             try:
                 scr = screen_text()
-                core.classify_tick(agent, scr)
+                if scr and len([l for l in scr.splitlines()
+                                if l.strip()]) <= 1:
+                    core.clear_outcome("terminal cleared")
+                ca = agent
+                if not ca.get("agent") and getattr(core, "_vanish",
+                                                   None):
+                    # Keep reading the screen under the vanished
+                    # agent's name so its ending can be resolved.
+                    ca = {"agent": core._vanish["agent"],
+                          "state": "idle", "source": "heuristic"}
+                core.classify_tick(ca, scr)
             except Exception as exc:  # the square must never freeze
                 if S.get("_scr_err") != str(exc):
                     S["_scr_err"] = str(exc)
@@ -2619,9 +2723,14 @@ def run_gui(project_arg: str | None) -> int:
             via = "deterministic"
             if ov and ambiguous and mode in ("build", "blinky") \
                     and time.time() - ov["at"] < 9:
-                mode = ov["mode"]
-                via = ("system1-screen" if ov.get("screen")
-                       else "system1-activity")
+                # A 'failed' screen verdict may not interrupt while
+                # processes/log facts say the agent is still working:
+                # mid-turn error text is not the ending.
+                if not (str(ov["mode"]).startswith("fail")
+                        and state in ("working", "tool_running")):
+                    mode = ov["mode"]
+                    via = ("system1-screen" if ov.get("screen")
+                           else "system1-activity")
             S["mode"] = mode
             S["square"].set_mode(mode)
             if S.get("_last_mode") != mode:
