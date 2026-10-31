@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.archify/*.finalize*.json
+.archify/*.browser-check.json
+.archify/*.delivery.json
+.archify/*/*.finalize*.json
+.archify/*/*.browser-check.json
+.archify/*/*.delivery.json

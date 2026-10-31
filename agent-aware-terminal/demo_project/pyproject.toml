@@ -1,0 +1,8 @@
+[project]
+name = "pulseboard"
+version = "0.1.0"
+description = "Team dashboards in the terminal"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

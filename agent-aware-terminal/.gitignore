@@ -1,0 +1,12 @@
+.venv/
+.venv-build/
+build/
+dist/
+__pycache__/
+data/cache/
+data/saved_cards.json
+data/*.log
+*.pyc
+*.spec
+.env
+pulseboard-data.json
