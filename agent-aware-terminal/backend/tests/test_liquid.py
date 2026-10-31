@@ -267,3 +267,27 @@ class ScreenClassificationTests(unittest.TestCase):
                             "confidence": 0.8}}
         self.assertEqual(client.classify_screen("menu>", "codex")["mode"],
                          "blinky")
+
+
+class HealthCheckTests(unittest.TestCase):
+    def test_health_check_outcomes(self):
+        import backend.app.liquid_client as lc
+        client = lc.LiquidClient.__new__(lc.LiquidClient)
+        client.api_key = ""
+        ok, why = client.health_check()
+        self.assertFalse(ok)
+        self.assertIn("no LIQUID_API_KEY", why)
+        client.api_key = "liquid_test"
+        client.model = "d1.1"
+        client.decide = lambda s, q: {"ok": {"type": "noul", "noul": 0.9}}
+        ok, _ = client.health_check()
+        self.assertTrue(ok)
+        client.decide = lambda s, q: {}
+        ok, _ = client.health_check()
+        self.assertFalse(ok)
+
+    def test_turn_done_mode(self):
+        native = _load_native()
+        self.assertEqual(
+            native.mode_for_agent({"state": "idle", "turn_done": True}),
+            "done")

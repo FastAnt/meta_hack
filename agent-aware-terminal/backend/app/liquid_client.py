@@ -86,6 +86,23 @@ class LiquidClient:
         resp.raise_for_status()
         return resp.json().get("answers") or {}
 
+    def health_check(self) -> tuple[bool, str]:
+        """One tiny real call proving the key + endpoint work."""
+        if not self.configured:
+            return False, "no LIQUID_API_KEY"
+        try:
+            answers = self.decide(
+                "Health check: a trivially well-formed request.", {
+                    "ok": {"type": "noul",
+                           "instructions": "How confident are you that "
+                                           "you understood this "
+                                           "trivial request?"}})
+            if answers:
+                return True, f"{self.model} answered"
+            return False, "empty answer from the API"
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"[:120]
+
     def predict_long_task(self, state: str) -> float | None:
         """Probability that the agent will work autonomously > ~20 s."""
         answers = self.decide(state, {

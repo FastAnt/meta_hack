@@ -192,8 +192,23 @@ class Core:
                              "screen_err": 0, "last_choice": "",
                              "last_conf": 0.0}
         self._prev_sig = None
+        self._done_until = 0.0
+        self._done_agent = None
+        self._busy_started_at = None
+        self.liquid_check = {"status": "pending", "detail": ""}
         self.dlog("boot", f"Liquid System-1: "
                     f"{'configured (' + self.liquid.model + ')' if self.liquid.configured else 'NOT CONFIGURED (no LIQUID_API_KEY)'}")
+        if not self.liquid.configured:
+            self.liquid_check = {"status": "no-key",
+                                 "detail": "no LIQUID_API_KEY"}
+        else:
+            def _probe():
+                ok, detail = self.liquid.health_check()
+                self.liquid_check = {"status": "ok" if ok else "failed",
+                                     "detail": detail}
+                self.dlog("system1", f"health check: "
+                                     f"{'OK' if ok else 'FAILED'} ({detail})")
+            threading.Thread(target=_probe, daemon=True).start()
         self.sim_feed = None
         sim_path = os.environ.get("AAT_SIM_FILE")
         if sim_path and os.path.exists(sim_path):
@@ -637,9 +652,34 @@ class Core:
         sig = (self.agent_state.get("agent"), self.agent_state.get("state"),
                self.agent_state.get("source"))
         if sig != self._prev_sig:
+            prev = self._prev_sig
             self._prev_sig = sig
             self.dlog("state", f"{sig[0] or 'no-agent'} · {sig[1]} "
                                f"(source={sig[2]})")
+            busy_states = ("working", "tool_running")
+            if sig[1] in busy_states:
+                if self._busy_started_at is None:
+                    self._busy_started_at = time.time()
+                self._done_until = 0.0
+            elif prev and prev[0] and prev[0] == sig[0] \
+                    and prev[1] in busy_states and sig[1] == "idle" \
+                    and sig[2] == "heuristic" \
+                    and self._busy_started_at \
+                    and time.time() - self._busy_started_at >= 5:
+                # An adapter-less agent finished a real turn: give
+                # the DONE check its moment before the float.
+                self._done_until = time.time() + 7
+                self._done_agent = sig[0]
+                self.dlog("mode", f"turn ended -> done window "
+                                  f"({sig[0]})")
+            if sig[1] not in busy_states:
+                self._busy_started_at = None
+        if self.agent_state.get("state") == "idle" \
+                and self.agent_state.get("agent") \
+                and self.agent_state.get("agent") == self._done_agent \
+                and time.time() < self._done_until:
+            self.agent_state = dict(self.agent_state)
+            self.agent_state["turn_done"] = True
 
     # -- Muse Spark / Muse Image (threads) ------------------------------
     def enrich_async(self):
@@ -877,6 +917,12 @@ def build_css(dark: bool) -> bytes:
     return f"""
 .scene {{ background: {p['bg']}; }}
 .ov-project {{ color: {p['text']}; font-family: {GROTESK}; font-size: 15px; font-weight: 600; letter-spacing: -0.15px; }}
+.sys1-banner {{
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px; letter-spacing: 0.08em;
+  color: {p['body']}; border: 1px solid {p['border']};
+  border-radius: 999px; padding: 4px 12px;
+}}
 .mode-agent {{ color: {p['muted']}; font-family: {MONO}; font-size: 10px; letter-spacing: 2.5px; }}
 button.term-return {{ color: {p['text']}; background: transparent; border: 1px solid {p['text']}; border-radius: 9999px; padding: 7px 16px; font-family: {GROTESK}; font-size: 13px; font-weight: 500; }}
 button.term-return:hover {{ background: {p['surface2']}; }}
@@ -972,7 +1018,7 @@ def mode_for_agent(agent: dict) -> str:
     """Map the normalized agent state/tool to a square animation mode."""
     import re
     st = agent.get("state") or "idle"
-    if st == "completed":
+    if st == "completed" or agent.get("turn_done"):
         return "done"
     if st == "awaiting_user":
         return "question" if agent.get("needs") == "answer" else "shuffle"
@@ -1689,7 +1735,8 @@ def run_gui(project_arg: str | None) -> int:
                             cr.line_to(sx + 0.74 * sz, cy - 0.18 * sz)
                         cr.stroke()
             elif mode == "fail":
-                # Something broke: the square cracks into two halves.
+                # Something broke: the square trembles, cracks, and
+                # falls apart into shards that tumble down.
                 self._fill(cr, x, y, s, s, 0.08)
                 self._rr(cr, x, y, s, s, 0.045 * s)
                 cr.set_source_rgba(*PAL["square"], 0.35 * self._am)
@@ -1697,22 +1744,29 @@ def run_gui(project_arg: str | None) -> int:
                 cr.stroke()
                 inner = 0.40 * s
                 ix, iy = x + (s - inner) / 2, y + (s - inner) / 2
-                cyc = t % 3.0
-                gap = 0.0
-                alpha = 0.92
-                if cyc > 0.7:
-                    fp = min((cyc - 0.7) / 0.5, 1.0)
-                    gap = 0.055 * s * (1 - (1 - fp) ** 2)
-                if cyc > 2.45:
-                    alpha = 0.92 * max(0.0, (3.0 - cyc) / 0.55)
-                for side in (-1, 1):
-                    cr.save()
-                    hx = ix if side < 0 else ix + inner / 2
-                    cr.rectangle(hx, iy - 2, inner / 2, inner + 4)
-                    cr.clip()
-                    self._fill(cr, ix + side * gap, iy, inner, inner,
-                               alpha, r=0.03 * s)
-                    cr.restore()
+                cyc = t % 3.2
+                if cyc < 0.5:
+                    tremble = 0.004 * s * (cyc / 0.5) * math.sin(t * 46)
+                    self._fill(cr, ix + tremble, iy, inner, inner,
+                               0.92, r=0.03 * s)
+                elif cyc < 1.9:
+                    lp = (cyc - 0.5) / 1.4
+                    drop = 0.34 * s * lp ** 2
+                    half = inner / 2
+                    for qi in range(4):
+                        qx = ix + (qi % 2) * half
+                        qy = iy + (qi // 2) * half
+                        ccx, ccy = qx + half / 2, qy + half / 2
+                        drift = (qi % 2 - 0.5) * 0.13 * s * lp
+                        spin = (1 if qi % 2 else -1) * 0.55 * lp
+                        cr.save()
+                        cr.translate(ccx + drift, ccy + drop)
+                        cr.rotate(spin)
+                        self._fill(cr, -half / 2 + 1, -half / 2 + 1,
+                                   half - 2, half - 2,
+                                   0.92 * max(0.0, 1 - lp), r=2)
+                        cr.restore()
+                # else: empty broken container, then it loops
             elif mode == "download":
                 # Downloading: squares rain in and pile up at the
                 # bottom of the big square.
@@ -2005,6 +2059,13 @@ def run_gui(project_arg: str | None) -> int:
         btn_return.connect("clicked", lambda *_: user_close())
         atop.pack_end(btn_return, False, False, 0)
         scene.pack_start(atop, False, False, 0)
+
+        S["sys1_banner"] = Gtk.Label(label="")
+        S["sys1_banner"].get_style_context().add_class("sys1-banner")
+        S["sys1_banner"].set_halign(Gtk.Align.CENTER)
+        S["sys1_banner"].set_margin_top(10)
+        scene.pack_start(S["sys1_banner"], False, False, 0)
+        S["sys1_banner"].hide()
 
         center = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=26)
         center.set_halign(Gtk.Align.CENTER)
@@ -2323,6 +2384,10 @@ def run_gui(project_arg: str | None) -> int:
                        "files": []}, "api"),
             "question": ({"state": "awaiting_user", "needs": "answer",
                           "activity": "Should I also update the README?"}, None),
+            "fail": ({"state": "tool_running", "tool": "bash",
+                      "command": "frobnicate --all",
+                      "activity": "bash: frobnicate --all",
+                      "files": []}, "core"),
             "failcompile": ({"state": "tool_running", "tool": "bash",
                              "command": "g++ -c main.cpp -o main.o",
                              "activity": "bash: g++ -c main.cpp -o main.o",
@@ -2394,6 +2459,17 @@ def run_gui(project_arg: str | None) -> int:
     def tick():
         agent, _comp = display_state()
         S["pill"].set_text(f"● {agent.get('agent') or 'agent'} · {agent.get('state')}")
+        chk = core.liquid_check
+        if chk["status"] == "ok":
+            S["sys1_banner"].hide()
+        else:
+            S["sys1_banner"].set_text({
+                "no-key": "SYSTEM 1 OFFLINE — no LIQUID_API_KEY · "
+                          "screen understanding off",
+                "failed": f"SYSTEM 1 CHECK FAILED — {chk['detail']}",
+                "pending": "SYSTEM 1 — checking connection…",
+            }.get(chk["status"], ""))
+            S["sys1_banner"].show()
         state = agent.get("state")
 
         # Mock completion gets demo results for reproducible screenshots.
