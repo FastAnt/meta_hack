@@ -652,6 +652,40 @@ def mode_for_agent(agent: dict) -> str:
     return "blinky"
 
 
+def load_keys_file():
+    """Load API keys from keys.sh by default (real env vars win).
+
+    Search order: $AAT_KEYS_FILE, ./keys.sh, keys.sh next to the app
+    (repo root / binary folder), ~/.config/agent-aware-terminal/keys.sh.
+    Lines look like: export MODEL_API_KEY=... — values are never logged.
+    """
+    candidates = []
+    if os.environ.get("AAT_KEYS_FILE"):
+        candidates.append(Path(os.environ["AAT_KEYS_FILE"]))
+    candidates += [
+        Path.cwd() / "keys.sh",
+        RES_ROOT / "keys.sh",
+        Path.home() / ".config" / "agent-aware-terminal" / "keys.sh",
+    ]
+    for path in candidates:
+        try:
+            if not path.is_file():
+                continue
+            import re
+            for line in path.read_text().splitlines():
+                m = re.match(
+                    r"\s*(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.+?)\s*$", line)
+                if not m:
+                    continue
+                name, value = m.group(1), m.group(2).strip("'\"")
+                if name not in os.environ and value:
+                    os.environ[name] = value
+            return path
+        except Exception:
+            continue
+    return None
+
+
 def ensure_inter_font():
     """Register the bundled Inter (grotesk) with fontconfig, once."""
     import subprocess
@@ -685,6 +719,9 @@ def run_gui(project_arg: str | None) -> int:
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    S_KEYS = load_keys_file()
+    if S_KEYS:
+        print(f"keys loaded from {S_KEYS}", file=sys.stderr)
     ensure_inter_font()
     _settings = Gtk.Settings.get_default()
     _theme = ((_settings.get_property("gtk-theme-name") or "").lower()

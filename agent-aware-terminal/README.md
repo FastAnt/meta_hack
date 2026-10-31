@@ -23,6 +23,18 @@ export MODEL_API_KEY="LLM|..."   # Meta Model API key (dev.meta.ai)
 ./dist/agent-aware-terminal/agent-aware-terminal
 ```
 
+Or put the keys in a `keys.sh` file — the app loads it automatically at
+startup (real environment variables win). It searches `$AAT_KEYS_FILE`,
+`./keys.sh`, `keys.sh` next to the app (repo root / binary folder), then
+`~/.config/agent-aware-terminal/keys.sh`:
+
+```bash
+export MODEL_API_KEY="LLM|..."
+export SYSTEM_1_MODEL_API_KEY="liquid_..."   # Liquid AI, for the gate
+```
+
+`keys.sh` is git-ignored and must never be committed.
+
 A window opens that looks like an ordinary terminal: the shell is already
 in the demo project, with only a thin header bar holding the agent
 indicator and the Overlay button (`Ctrl+Shift+O`). From sources it is the
@@ -100,7 +112,7 @@ probability, zero generated tokens): *"Will the agent keep working
 autonomously for more than ~20 seconds?"* Only a "long" answer opens the
 overlay — once per task. A "short" answer is re-checked every 25 s (max
 4 times) as the work grows. Key: `LIQUID_API_KEY` (or
-`SYSTEM_1_MODEL_API_KEY`); without one, a documented heuristic decides
+`SYSTEM_1_MODEL_API_KEY`, e.g. from `keys.sh`); without one, a documented heuristic decides
 (plan ≥ 3 items, ≥ 4 steps, or ≥ 25 s elapsed) and the source is shown in
 Diagnostics.
 
