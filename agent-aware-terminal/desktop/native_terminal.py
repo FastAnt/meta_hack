@@ -2620,6 +2620,16 @@ def run_gui(project_arg: str | None) -> int:
             on_spawn, None)
         vte.grab_focus()
         serve_game(False)
+
+        def _anim_tick():
+            game = S["game_ctl"].get("game")
+            if S["overlay_on"] and game \
+                    and (game.get("scene") or {}).get("anim") \
+                    and S["left_stack"].get_visible_child_name() \
+                    == "content":
+                S["game_scene"].queue_draw()
+            return True
+        GLib.timeout_add(50, _anim_tick)
         GLib.timeout_add(280, tick)
         if os.environ.get("AAT_OPEN_OVERLAY"):
             GLib.timeout_add(1300, lambda: (set_overlay(True), False)[1])
@@ -2709,7 +2719,8 @@ def run_gui(project_arg: str | None) -> int:
     def serve_game(advance=True):
         ctl = S["game_ctl"]
         game = engine.next_game() if advance else engine.current()
-        ctl.update(game=game, answered=False, chosen=None, btns={})
+        ctl.update(game=game, answered=False, chosen=None, btns={},
+                   t0=time.time())
         if game is None:
             S["game_box"].hide()
             S["game_empty"].show_all()
@@ -2793,126 +2804,15 @@ def run_gui(project_arg: str | None) -> int:
             ctl.update(rects={}, radii=[])
 
     def draw_game_scene(area, cr):
-        import math
         ctl = S["game_ctl"]
         game = ctl.get("game")
         if not game:
             return False
         w, h = area.get_allocated_width(), area.get_allocated_height()
-        scene = game.get("scene") or {}
-        _scene_geom(game, w, h)
-        stype = scene.get("type")
-        strong = PAL["square"]
-        text = PALC["text"]
-
-        def rr(x, y, rw, rh, r):
-            cr.new_path()
-            cr.arc(x + rw - r, y + r, r, -1.5708, 0)
-            cr.arc(x + rw - r, y + rh - r, r, 0, 1.5708)
-            cr.arc(x + r, y + rh - r, r, 1.5708, 3.1416)
-            cr.arc(x + r, y + r, r, 3.1416, 4.7124)
-            cr.close_path()
-
-        if stype == "orbits":
-            cx, cy = ctl["center"]
-            for i, r in enumerate(ctl["radii"]):
-                cr.arc(cx, cy, r, 0, 6.2832)
-                if ctl["answered"] and game.get("answer") == f"ring-{i + 1}":
-                    cr.set_source_rgba(*strong, 0.95)
-                    cr.set_line_width(2.8)
-                elif ctl["answered"] and ctl["chosen"] == f"ring-{i + 1}":
-                    cr.set_source_rgba(*text, 0.9)
-                    cr.set_line_width(2.2)
-                else:
-                    cr.set_source_rgba(*PALC["muted"], 0.55)
-                    cr.set_line_width(1.2)
-                cr.stroke()
-            cr.arc(cx, cy, 15, 0, 6.2832)
-            cr.set_source_rgba(*strong, 0.95)
-            cr.set_line_width(1.6)
-            cr.stroke()
-            cr.set_source_rgba(*strong, 0.75)
-            cr.set_line_width(1.3)
-            for k in range(8):
-                a = k * 0.7854
-                cr.move_to(cx + 21 * math.cos(a), cy + 21 * math.sin(a))
-                cr.line_to(cx + 29 * math.cos(a), cy + 29 * math.sin(a))
-            cr.stroke()
-            for dot in scene.get("dots") or []:
-                r = ctl["radii"][int(dot["ring"]) - 1]
-                a = math.radians(float(dot.get("angle", 0)))
-                cr.arc(cx + r * math.cos(a), cy + r * math.sin(a),
-                       5, 0, 6.2832)
-                cr.set_source_rgba(*strong, 0.95)
-                cr.fill()
-        elif stype == "diagram":
-            rects = ctl["rects"]
-            for e in scene.get("edges") or []:
-                a = rects.get(e.get("from"))
-                b = rects.get(e.get("to"))
-                if not a or not b:
-                    continue
-                ax, ay = a[0] + a[2] / 2, a[1] + a[3] / 2
-                bx, by = b[0] + b[2] / 2, b[1] + b[3] / 2
-                cr.move_to(ax, ay)
-                cr.line_to(bx, by)
-                cr.set_source_rgba(*PALC["muted"], 0.45)
-                cr.set_line_width(1.2)
-                cr.stroke()
-                ang = math.atan2(by - ay, bx - ax)
-                px, py = ax + (bx - ax) * 0.66, ay + (by - ay) * 0.66
-                cr.move_to(px, py)
-                cr.line_to(px - 9 * math.cos(ang - 0.42),
-                           py - 9 * math.sin(ang - 0.42))
-                cr.line_to(px - 9 * math.cos(ang + 0.42),
-                           py - 9 * math.sin(ang + 0.42))
-                cr.close_path()
-                cr.set_source_rgba(*text, 0.8)
-                cr.fill()
-            cr.select_font_face("Inter", 0, 0)
-            cr.set_font_size(15)
-            for n in scene.get("nodes") or []:
-                x, y, nw, nh = rects[n["id"]]
-                right = ctl["answered"] and game.get("answer") == n["id"]
-                wrong = ctl["answered"] and ctl["chosen"] == n["id"] \
-                    and not right
-                rr(x, y, nw, nh, 12)
-                if right:
-                    cr.set_source_rgba(*strong, 0.95)
-                    cr.fill()
-                    cr.set_source_rgba(*PALC["bg"], 1)
-                else:
-                    cr.set_source_rgba(*PALC["bg"], 1)
-                    cr.fill_preserve()
-                    cr.set_source_rgba(*text, 0.85 if wrong else 0.5)
-                    cr.set_line_width(2.2 if wrong else 1.2)
-                    cr.stroke()
-                    cr.set_source_rgba(*text, 1)
-                ext = cr.text_extents(n.get("label", ""))
-                cr.move_to(x + nw / 2 - (ext.width / 2 + ext.x_bearing),
-                           y + nh / 2 - (ext.height / 2 + ext.y_bearing))
-                cr.show_text(n.get("label", ""))
-        elif stype == "network":
-            layers = scene.get("layers") or [3, 4, 2]
-            pts = ce.network_positions(layers, w, h)
-            by_layer = {}
-            for x, y, li in pts:
-                by_layer.setdefault(li, []).append((x, y))
-            cr.set_source_rgba(*PALC["muted"], 0.18)
-            cr.set_line_width(1.0)
-            for li in sorted(by_layer)[:-1]:
-                for x1, y1 in by_layer[li]:
-                    for x2, y2 in by_layer[li + 1]:
-                        cr.move_to(x1, y1)
-                        cr.line_to(x2, y2)
-            cr.stroke()
-            for x, y, _li in pts:
-                cr.arc(x, y, 13, 0, 6.2832)
-                cr.set_source_rgba(*PALC["bg"], 1)
-                cr.fill_preserve()
-                cr.set_source_rgba(*strong, 0.9)
-                cr.set_line_width(1.4)
-                cr.stroke()
+        _scene_geom(game, w, h)  # keeps hit-test geometry fresh
+        ce.paint_scene(cr, game, w, h, PALC,
+                       chosen=ctl["chosen"], answered=ctl["answered"],
+                       t=time.time() - (ctl.get("t0") or time.time()))
         return False
 
     def on_game_scene_click(_w, event):

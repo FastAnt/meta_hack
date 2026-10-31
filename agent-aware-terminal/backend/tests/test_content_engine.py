@@ -161,3 +161,47 @@ class NoRepeatCycleTests(unittest.TestCase):
             nxt = second.next_game()["id"]
             self.assertNotIn(nxt, served)  # still the unseen one
             self.assertEqual(second.progress(), (3, 3))
+
+
+class AnimationTests(unittest.TestCase):
+    def test_anim_validation(self):
+        pack, err = ce.validate_pack({
+            "id": "x", "title": "t", "answer": "a",
+            "choices": [{"id": "a", "label": "A"}],
+            "scene": {"type": "network", "layers": [2, 2],
+                      "anim": {"type": "orbit"}}})
+        self.assertIsNone(pack)  # orbit is not a network anim
+        pack, err = ce.validate_pack({
+            "id": "x", "title": "t", "answer": "a",
+            "choices": [{"id": "a", "label": "A"}],
+            "scene": {"type": "network", "layers": [2, 2],
+                      "anim": {"type": "pulse", "speed": 0.8}}})
+        self.assertIsNotNone(pack, err)
+
+    def test_shipped_games_are_animated(self):
+        packs, _ = ce.scan_packs([GAMES_DIR])
+        for pack in packs:
+            self.assertTrue((pack.get("scene") or {}).get("anim"),
+                            f"{pack['id']} should animate")
+
+    def test_paint_moves_with_time(self):
+        try:
+            import cairo
+        except ImportError:
+            self.skipTest("pycairo not in this interpreter")
+        packs, _ = ce.scan_packs([GAMES_DIR])
+        colors = {"square": (0.97, 0.97, 0.97),
+                  "text": (0.97, 0.97, 0.97),
+                  "muted": (0.5, 0.5, 0.55), "bg": (0.05, 0.05, 0.06)}
+
+        def frame(pack, at):
+            surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, 880, 620)
+            cr = cairo.Context(surf)
+            cr.set_source_rgb(*colors["bg"])
+            cr.paint()
+            ce.paint_scene(cr, pack, 880, 620, colors, t=at)
+            return bytes(surf.get_data())
+
+        for pack in packs:
+            self.assertNotEqual(frame(pack, 0.2), frame(pack, 1.8),
+                                f"{pack['id']} does not move")

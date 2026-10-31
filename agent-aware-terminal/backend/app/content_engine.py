@@ -33,6 +33,11 @@ from pathlib import Path
 
 KINDS = ("quiz", "card")
 SCENES = ("orbits", "diagram", "network")
+# Declarative scene animation: subtle motion beats a still
+# picture. Values are speeds (relative; keep them slow).
+ANIMS = {"orbits": ("orbit", "breathe"),
+         "diagram": ("flow", "breathe"),
+         "network": ("pulse", "breathe")}
 
 
 def scene_targets(pack: dict) -> list[str]:
@@ -72,6 +77,12 @@ def validate_pack(raw, source: str = "") -> tuple[dict | None, str | None]:
         if scene["type"] == "network" and \
                 len(scene.get("layers") or []) < 2:
             return None, f"{pid}: network needs >= 2 layers"
+        anim = scene.get("anim")
+        if anim is not None and (
+                not isinstance(anim, dict)
+                or anim.get("type") not in ANIMS[scene["type"]]):
+            return None, (f"{pid}: anim type not allowed for "
+                          f"{scene['type']} scene")
     choices = raw.get("choices") or []
     cids = [c.get("id") for c in choices]
     if len(cids) != len(set(cids)):
@@ -166,6 +177,164 @@ def network_positions(layers, w: float, h: float):
             y = h * (i + 1) / (count + 1)
             pts.append((x, y, li))
     return pts
+
+
+def paint_scene(cr, pack, w: float, h: float, colors: dict,
+                chosen: str | None = None, answered: bool = False,
+                t: float = 0.0):
+    """Paint a pack scene with cairo. `colors` maps square/text/
+    muted/bg to (r, g, b) tuples. `t` is seconds since the game
+    was served — animated scenes (scene.anim) move with it. The
+    app and tools/test_game.py share this painter, so previews
+    are faithful."""
+    import math
+    scene = pack.get("scene") or {}
+    stype = scene.get("type")
+    anim = scene.get("anim") or {}
+    atype = anim.get("type")
+    speed = float(anim.get("speed", 0.15))
+    strong = colors["square"]
+    text = colors["text"]
+    muted = colors["muted"]
+    bg = colors["bg"]
+
+    def rr(x, y, rw, rh, r):
+        cr.new_path()
+        cr.arc(x + rw - r, y + r, r, -1.5708, 0)
+        cr.arc(x + rw - r, y + rh - r, r, 0, 1.5708)
+        cr.arc(x + r, y + rh - r, r, 1.5708, 3.1416)
+        cr.arc(x + r, y + r, r, 3.1416, 4.7124)
+        cr.close_path()
+
+    if atype == "breathe":
+        s = 1 + 0.012 * math.sin(t * 1.4)
+        cr.translate(w / 2, h / 2)
+        cr.scale(s, s)
+        cr.translate(-w / 2, -h / 2)
+
+    if stype == "orbits":
+        cx, cy = w / 2, h / 2
+        radii = ring_radii(w, h, int(scene.get("rings", 4)))
+        drift = t * speed * 45 if atype == "orbit" else 0.0
+        for i, r in enumerate(radii):
+            cr.arc(cx, cy, r, 0, 6.2832)
+            if answered and pack.get("answer") == f"ring-{i + 1}":
+                cr.set_source_rgba(*strong, 0.95)
+                cr.set_line_width(2.8)
+            elif answered and chosen == f"ring-{i + 1}":
+                cr.set_source_rgba(*text, 0.9)
+                cr.set_line_width(2.2)
+            else:
+                cr.set_source_rgba(*muted, 0.55)
+                cr.set_line_width(1.2)
+            cr.stroke()
+        cr.arc(cx, cy, 15, 0, 6.2832)
+        cr.set_source_rgba(*strong, 0.95)
+        cr.set_line_width(1.6)
+        cr.stroke()
+        cr.set_source_rgba(*strong, 0.75)
+        cr.set_line_width(1.3)
+        rot = t * speed * 0.6 if atype == "orbit" else 0.0
+        for k in range(8):
+            a = k * 0.7854 + rot
+            cr.move_to(cx + 21 * math.cos(a), cy + 21 * math.sin(a))
+            cr.line_to(cx + 29 * math.cos(a), cy + 29 * math.sin(a))
+        cr.stroke()
+        for dot in scene.get("dots") or []:
+            r = radii[int(dot["ring"]) - 1]
+            a = math.radians(float(dot.get("angle", 0)) + drift)
+            cr.arc(cx + r * math.cos(a), cy + r * math.sin(a),
+                   5, 0, 6.2832)
+            cr.set_source_rgba(*strong, 0.95)
+            cr.fill()
+    elif stype == "diagram":
+        rects = node_rects(scene.get("nodes") or [], w, h)
+        edges = scene.get("edges") or []
+        for e in edges:
+            a = rects.get(e.get("from"))
+            b = rects.get(e.get("to"))
+            if not a or not b:
+                continue
+            ax, ay = a[0] + a[2] / 2, a[1] + a[3] / 2
+            bx, by = b[0] + b[2] / 2, b[1] + b[3] / 2
+            cr.move_to(ax, ay)
+            cr.line_to(bx, by)
+            cr.set_source_rgba(*muted, 0.45)
+            cr.set_line_width(1.2)
+            cr.stroke()
+            ang = math.atan2(by - ay, bx - ax)
+            px, py = ax + (bx - ax) * 0.66, ay + (by - ay) * 0.66
+            cr.move_to(px, py)
+            cr.line_to(px - 9 * math.cos(ang - 0.42),
+                       py - 9 * math.sin(ang - 0.42))
+            cr.line_to(px - 9 * math.cos(ang + 0.42),
+                       py - 9 * math.sin(ang + 0.42))
+            cr.close_path()
+            cr.set_source_rgba(*text, 0.8)
+            cr.fill()
+        if atype == "flow" and edges:
+            span = (t * max(speed, 0.01)) % len(edges)
+            idx = int(span)
+            frac = span - idx
+            e = edges[idx]
+            a = rects.get(e.get("from"))
+            b = rects.get(e.get("to"))
+            if a and b:
+                ax, ay = a[0] + a[2] / 2, a[1] + a[3] / 2
+                bx, by = b[0] + b[2] / 2, b[1] + b[3] / 2
+                cr.arc(ax + (bx - ax) * frac, ay + (by - ay) * frac,
+                       4.5, 0, 6.2832)
+                cr.set_source_rgba(*text, 0.9)
+                cr.fill()
+        cr.select_font_face("Inter", 0, 0)
+        cr.set_font_size(15)
+        for n in scene.get("nodes") or []:
+            x, y, nw, nh = rects[n["id"]]
+            right = answered and pack.get("answer") == n["id"]
+            wrong = answered and chosen == n["id"] and not right
+            rr(x, y, nw, nh, 12)
+            if right:
+                cr.set_source_rgba(*strong, 0.95)
+                cr.fill()
+                cr.set_source_rgba(*bg, 1)
+            else:
+                cr.set_source_rgba(*bg, 1)
+                cr.fill_preserve()
+                cr.set_source_rgba(*text, 0.85 if wrong else 0.5)
+                cr.set_line_width(2.2 if wrong else 1.2)
+                cr.stroke()
+                cr.set_source_rgba(*text, 1)
+            ext = cr.text_extents(n.get("label", ""))
+            cr.move_to(x + nw / 2 - (ext.width / 2 + ext.x_bearing),
+                       y + nh / 2 - (ext.height / 2 + ext.y_bearing))
+            cr.show_text(n.get("label", ""))
+    elif stype == "network":
+        layers = scene.get("layers") or [3, 4, 2]
+        pts = network_positions(layers, w, h)
+        by_layer: dict[int, list] = {}
+        for x, y, li in pts:
+            by_layer.setdefault(li, []).append((x, y))
+        cr.set_source_rgba(*muted, 0.18)
+        cr.set_line_width(1.0)
+        for li in sorted(by_layer)[:-1]:
+            for x1, y1 in by_layer[li]:
+                for x2, y2 in by_layer[li + 1]:
+                    cr.move_to(x1, y1)
+                    cr.line_to(x2, y2)
+        cr.stroke()
+        for x, y, li in pts:
+            r = 13
+            alpha = 0.9
+            if atype == "pulse":
+                wave = math.sin(t * 2.0 - li * 1.1)
+                r = 13 + 2.5 * wave
+                alpha = 0.6 + 0.35 * wave
+            cr.arc(x, y, r, 0, 6.2832)
+            cr.set_source_rgba(*bg, 1)
+            cr.fill_preserve()
+            cr.set_source_rgba(*strong, alpha)
+            cr.set_line_width(1.4)
+            cr.stroke()
 
 
 # ---------------------------------------------------------------------------
