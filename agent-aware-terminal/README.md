@@ -84,7 +84,7 @@ the whole status display (in the spirit of FUI field-guide glyphs):
 
 | Mode | Animation | Meaning |
 |---|---|---|
-| `BLINKY` | a calm blinking square | idle, done, or no agent connected |
+| `FLOAT` | a square levitating calmly, no caption | idle or no agent connected |
 | `GLITCH` | the square slices and jitters | searching the local system (files, code) |
 | `TRAIL` | the square moves, leaving a trail | searching the web |
 | `SHUFFLE` | four tiles keep swapping | the agent needs you — click the square to return to the terminal |
