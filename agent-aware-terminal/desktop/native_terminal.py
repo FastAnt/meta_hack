@@ -183,7 +183,14 @@ class Core:
         self._deterministic_cards = deterministic_cards
         self.meta = MetaClient()
         from backend.app.liquid_client import LiquidClient
+        from backend.app.simulator import SimulationFeed
         self.liquid = LiquidClient()
+        self.sim_feed = None
+        sim_path = os.environ.get("AAT_SIM_FILE")
+        if sim_path and os.path.exists(sim_path):
+            self.sim_feed = SimulationFeed(
+                sim_path, loop=os.environ.get("AAT_SIM_LOOP") == "1")
+            self.sim_feed.start()
         self.store = CardStore(str(DATA_DIR / "saved_cards.json"))
         self.project: dict | None = None
         self.project_path = project_path
@@ -496,6 +503,9 @@ class Core:
 
     def refresh_agent_state(self):
         """Adapter facts win; observer heuristics are the fallback."""
+        if self.sim_feed is not None and self.sim_feed.state:
+            self.agent_state = dict(self.sim_feed.state)
+            return
         with self._lock:
             adapter_state = self.adapter_state
         if self.adapter.current_file and adapter_state:
@@ -794,7 +804,7 @@ MODE_CAPTIONS = {
     "copy": ("COPYING", "Copying files"),
     "install": ("INSTALLING", "Installing"),
     "done": ("DONE", "Done"),
-    "blinky": ("BLINKY", "Idle"),
+    "blinky": ("", ""),
     "glitch": ("SCANNING", "Searching the system"),
     "trail": ("TRAIL", "Searching the web"),
     "shuffle": ("SHUFFLE", "The agent needs you"),
@@ -868,14 +878,14 @@ def mode_for_agent(agent: dict) -> str:
                 return "test"
             if re.search(lead + r"(ld|lld|gold|mold)\b", cmd) \
                     or "linking" in act \
-                    or (re.search(r"\b(gcc|g\+\+|clang)\b", cmd)
+                    or (re.search(r"\b(gcc|clang)\b|\bg\+\+", cmd)
                         and "-c" not in cmd and ".o" in cmd):
                 return "link"
             if re.search(lead + r"(cp|rsync|scp|sftp|robocopy)\b", cmd):
                 return "copy"
-            if re.search(r"\b(make|cmake|ninja|gcc|g\+\+|clang|cc|rustc"
+            if re.search(r"\b(make|cmake|ninja|gcc|clang|cc|rustc"
                          r"|javac|kotlinc|swiftc|tsc|webpack|mvn|gradle"
-                         r"|dotnet)\b|\b(cargo|go|npm|pnpm|yarn)\s+"
+                         r"|dotnet)\b|\bg\+\+|\b(cargo|go|npm|pnpm|yarn)\s+"
                          r"(build|check)\b|\bnpm\s+run\s+build\b"
                          r"|\bpython3?\s+-m\s+build\b"
                          r"|\bdocker\s+(build|compose\s+build)\b", cmd):
@@ -1172,11 +1182,23 @@ def run_gui(project_arg: str | None) -> int:
                 cr.line_to(x + 0.83 * s, y + 0.27 * s)
                 cr.stroke()
             elif mode == "blinky":
-                phase = t % 3.4
-                sy = 1.0
-                if phase < 0.22:  # a calm blink
-                    sy = max(0.1, abs(phase - 0.11) / 0.11)
-                self._fill(cr, x, y + s * (1 - sy) / 2, s, s * sy, 0.92)
+                # Idle: the square levitates — a slow, calm float
+                # with a soft shadow breathing underneath.
+                bob = math.sin(t * 1.25)
+                yoff = 0.016 * s * bob
+                sh_w = 0.46 * s * (1 - 0.07 * bob)
+                cr.save()
+                cr.translate(x + s / 2, y + 0.965 * s)
+                cr.scale(1.0, 0.16)
+                cr.arc(0, 0, sh_w / 2, 0, 2 * math.pi)
+                cr.set_source_rgba(*PAL["square"],
+                                   (0.10 + 0.03 * (1 - bob) / 2) * self._am)
+                cr.fill()
+                cr.restore()
+                grow = 1 + 0.008 * math.sin(t * 1.25 + 0.7)
+                side = s * 0.94 * grow
+                self._fill(cr, x + (s - side) / 2, y + (s - side) / 2 + yoff,
+                           side, side, 0.92, r=0.045 * s)
             elif mode == "glitch":
                 # Searching the system: a field of small file squares;
                 # one after another swells up as it is inspected.
@@ -2237,8 +2259,6 @@ def run_gui(project_arg: str | None) -> int:
                 title = "Done"
             elif state == "failed":
                 title = "Failed"
-            elif state == "idle" and not agent.get("agent"):
-                title = "Waiting for an agent"
             S["mode_label"].set_text(label)
             if S["mode_title"].get_text() != title:
                 S["mode_title"].set_text(title)

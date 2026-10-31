@@ -1,0 +1,20 @@
+# A full fake agent run, streamed line by line. "expect" is the square
+# mode the state must produce; tools/simulate.py verifies all of them.
+{"sleep": 0, "state": "idle", "expect": "blinky"}
+{"sleep": 2, "state": "tool_running", "tool": "search", "activity": "Searching the codebase for storage usage", "expect": "glitch"}
+{"sleep": 2, "state": "tool_running", "tool": "web_search", "activity": "Searching the web for C++ JSON parsing", "expect": "trail"}
+{"sleep": 2, "state": "planning", "activity": "Designing boardreport before coding", "expect": "flash"}
+{"sleep": 2, "state": "tool_running", "tool": "bash", "command": "rm -rf cpp_app", "activity": "bash: rm -rf cpp_app", "expect": "delete"}
+{"sleep": 2, "state": "tool_running", "tool": "edit_file", "activity": "cpp_app/main.cpp", "expect": "build"}
+{"sleep": 2, "state": "tool_running", "tool": "bash", "command": "cp pulseboard-data.json cpp_app/metrics.json", "expect": "copy"}
+{"sleep": 2, "state": "tool_running", "tool": "bash", "command": "curl -O https://example.com/data.json", "expect": "download"}
+{"sleep": 2, "state": "tool_running", "tool": "bash", "command": "tar -xzf data.tar.gz", "expect": "extract"}
+{"sleep": 2, "state": "tool_running", "tool": "bash", "command": "g++ -std=c++20 -O2 -c cpp_app/main.cpp -o cpp_app/main.o", "expect": "compile"}
+{"sleep": 2, "state": "tool_running", "tool": "bash", "command": "g++ cpp_app/main.o -o cpp_app/boardreport", "expect": "link"}
+{"sleep": 2, "state": "tool_running", "tool": "bash", "command": "python -m pytest -q", "expect": "test"}
+{"sleep": 2, "state": "tool_running", "tool": "bash", "command": "python -m pytest -q", "last_failure": {"tool": "bash", "command": "python -m pytest -q", "reason": "process exited with status 1", "at": null}, "expect": "fail_test"}
+{"sleep": 3, "state": "awaiting_user", "needs": "answer", "activity": "Should I also update the README?", "expect": "question"}
+{"sleep": 2, "state": "awaiting_user", "needs": "approval", "activity": "Approval needed: run the tests", "expect": "shuffle"}
+{"sleep": 2, "state": "tool_running", "tool": "bash", "command": "uvicorn app:main --port 8000", "expect": "serve"}
+{"sleep": 2, "state": "tool_running", "tool": "bash", "command": "git push origin main", "expect": "git"}
+{"sleep": 2, "state": "completed", "activity": "All done, tests pass", "expect": "done"}

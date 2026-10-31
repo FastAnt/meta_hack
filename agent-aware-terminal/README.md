@@ -273,3 +273,21 @@ The Meta API key is passed only via the `MODEL_API_KEY` environment
 variable of the app process. The key is not in the repository, logs, or
 code; any test key used during development must be revoked at dev.meta.ai
 afterwards.
+
+## Testing the visualization (simulator)
+
+You do not need a real agent to test the square. A *simulation* is a
+JSONL text file whose lines are streamed into the app as fake agent
+states (`backend/app/simulator.py`):
+
+```json
+{"sleep": 2, "state": "tool_running", "tool": "bash", "command": "g++ -c main.cpp -o main.o", "expect": "compile"}
+{"sleep": 2, "state": "awaiting_user", "needs": "answer", "activity": "Deploy?", "expect": "question"}
+```
+
+- Watch it live: `AAT_SIM_FILE=sims/demo_run.jsonl ./run.sh`
+  (add `AAT_SIM_LOOP=1` to loop; the header pill shows `simulator`).
+- Check it automatically, no GUI: `python3 tools/simulate.py
+  sims/demo_run.jsonl` prints the state → mode timeline and exits
+  non-zero if any `expect` mismatches. The same script is part of the
+  unit-test suite (`backend/tests/test_simulator.py`).

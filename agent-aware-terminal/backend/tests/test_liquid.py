@@ -245,3 +245,8 @@ class FailureAndQuestionTests(unittest.TestCase):
                                              "command": "cargo build",
                                              "at": _time.time()}}),
                          "fail_compile")
+        self.assertEqual(m({"state": "tool_running", "tool": "bash",
+                            "command": "g++ -std=c++20 -O2 -c main.cpp -o main.o"}),
+                         "compile")
+        self.assertEqual(m({"state": "tool_running", "tool": "bash",
+                            "command": "g++ main.o -o boardreport"}), "link")
