@@ -1107,6 +1107,11 @@ def build_css(dark: bool) -> bytes:
   color: {p['body']}; border: 1px solid {p['border']};
   border-radius: 999px; padding: 4px 12px;
 }}
+.content-soon {{
+  color: {p['body']}; font-family: {GROTESK}; font-size: 30px; font-weight: 600;
+  letter-spacing: -0.5px;
+}}
+.content-sub {{ color: {p['muted']}; font-family: {GROTESK}; font-size: 14px; }}
 .mode-agent {{ color: {p['muted']}; font-family: {MONO}; font-size: 10px; letter-spacing: 2.5px; }}
 button.term-return {{ color: {p['text']}; background: transparent; border: 1px solid {p['text']}; border-radius: 9999px; padding: 7px 16px; font-family: {GROTESK}; font-size: 13px; font-weight: 500; }}
 button.term-return:hover {{ background: {p['surface2']}; }}
@@ -1407,7 +1412,9 @@ def run_gui(project_arg: str | None) -> int:
                           flags=Gio.ApplicationFlags.FLAGS_NONE)
     S: dict = {"win": None, "overlay_on": False, "panel_on": False,
                "mode": "blinky", "user_closed_task": None,
-               "results_shown_task": None, "layout": "overlay"}
+               "results_shown_task": None, "layout": "overlay",
+               "left_override": None, "_agent_busy": False,
+               "_square_mode": "blinky"}
 
     # ---------------- end-of-session result squares ----------------
     class ResultSquare(Gtk.DrawingArea):
@@ -2178,20 +2185,25 @@ def run_gui(project_arg: str | None) -> int:
         win.set_titlebar(header)
         S["header"] = header
 
-        btn_overlay = Gtk.Button(label="Overlay")
-        btn_overlay.connect("clicked", lambda *_: set_overlay(True))
-        header.pack_end(btn_overlay)
-        S["btn_split"] = Gtk.ToggleButton(label="Split")
-        S["btn_split"].connect("toggled", lambda b: set_layout(
-            "split" if b.get_active() else "overlay"))
-        header.pack_end(S["btn_split"])
         S["pill"] = Gtk.Label(label="idle")
         header.pack_end(S["pill"])
+        # The floating square: toggles the visualization mode. It is
+        # a miniature of the big square — hollow when the mode is
+        # off, filled by agent activity when on, and it breathes
+        # when the agent needs the user.
+        S["mode_btn"] = Gtk.DrawingArea()
+        S["mode_btn"].set_size_request(30, 30)
+        S["mode_btn"].connect("draw", draw_mode_btn)
+        mode_ev = Gtk.EventBox()
+        mode_ev.add(S["mode_btn"])
+        mode_ev.connect("button-press-event",
+                        lambda *_: set_overlay(not S["overlay_on"]))
+        header.pack_end(mode_ev)
 
         menu = Gio.Menu()
         menu.append("Open project…", "app.open-project")
         menu.append("Run Muse with a task", "app.muse-task")
-        menu.append("Split screen", "app.split")
+        menu.append("Visualization mode", "app.split")
         menu.append("History & diagnostics", "app.panel")
         menu.append("Simulate events (dev)", "app.simulate")
         menu.append("Quit", "app.quit")
@@ -2222,7 +2234,32 @@ def run_gui(project_arg: str | None) -> int:
 
         overlay = Gtk.Overlay()
         paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        paned.pack1(scrolled, True, True)
+        # Left pane: the terminal, or — while the agent works — the
+        # companion content space that earns the user's attention.
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                          spacing=10)
+        content.get_style_context().add_class("scene")
+        content.set_hexpand(True)
+        content.set_vexpand(True)
+        soon = Gtk.Label(label="Soon content will appear")
+        soon.get_style_context().add_class("content-soon")
+        soon_sub = Gtk.Label(
+            label="While the agent works, this space is yours.")
+        soon_sub.get_style_context().add_class("content-sub")
+        inner_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                            spacing=10)
+        inner_box.set_halign(Gtk.Align.CENTER)
+        inner_box.set_valign(Gtk.Align.CENTER)
+        inner_box.pack_start(soon, False, False, 0)
+        inner_box.pack_start(soon_sub, False, False, 0)
+        content.pack_start(inner_box, True, False, 0)
+        S["left_stack"] = Gtk.Stack()
+        S["left_stack"].set_transition_type(
+            Gtk.StackTransitionType.CROSSFADE)
+        S["left_stack"].set_transition_duration(180)
+        S["left_stack"].add_named(scrolled, "terminal")
+        S["left_stack"].add_named(content, "content")
+        paned.pack1(S["left_stack"], True, True)
         overlay.add(paned)
         win.add(overlay)
         S["root_overlay"] = overlay
@@ -2252,7 +2289,7 @@ def run_gui(project_arg: str | None) -> int:
         atop.pack_end(btn_more, False, False, 8)
         btn_return = Gtk.Button(label="\u2190 Terminal")
         btn_return.get_style_context().add_class("term-return")
-        btn_return.connect("clicked", lambda *_: user_close())
+        btn_return.connect("clicked", lambda *_: show_terminal())
         atop.pack_end(btn_return, False, False, 0)
         scene.pack_start(atop, False, False, 0)
 
@@ -2269,7 +2306,7 @@ def run_gui(project_arg: str | None) -> int:
         S["square"] = AgentSquare()
         evbox = Gtk.EventBox()
         evbox.add(S["square"])
-        evbox.connect("button-press-event", lambda *_: user_close())
+        evbox.connect("button-press-event", lambda *_: toggle_left())
         center.pack_start(evbox, False, False, 0)
         captions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=7)
         S["mode_label"] = Gtk.Label(label="BLINKY")
@@ -2315,7 +2352,7 @@ def run_gui(project_arg: str | None) -> int:
         scene.pack_start(S["hint"], False, False, 0)
 
         def _fit_square(_w, alloc):
-            factor = 0.58 if S.get("layout") == "split" else 0.30
+            factor = 0.58 if S.get("overlay_on") else 0.30
             side = int(min(factor * alloc.width, 0.58 * alloc.height))
             if side > 40 and S["square"].get_size_request().width != side:
                 S["square"].set_size_request(side, side)
@@ -2386,53 +2423,146 @@ def run_gui(project_arg: str | None) -> int:
         if os.environ.get("AAT_OPEN_OVERLAY"):
             GLib.timeout_add(1300, lambda: (set_overlay(True), False)[1])
         if os.environ.get("AAT_SPLIT"):
-            GLib.timeout_add(900, lambda: (
-                S["btn_split"].set_active(True), set_overlay(True), False)[-1])
+            GLib.timeout_add(900, lambda: (set_overlay(True), False)[1])
 
     # ---------------- actions ----------------
+    def draw_mode_btn(area, cr):
+        w, h = area.get_allocated_width(), area.get_allocated_height()
+        s = max(min(w, h) - 12, 8)
+        x, y = (w - s) / 2, (h - s) / 2
+        mode = S.get("_square_mode", "blinky")
+
+        def rr(px, py, ps, r):
+            cr.new_path()
+            cr.arc(px + ps - r, py + r, r, -1.5708, 0)
+            cr.arc(px + ps - r, py + ps - r, r, 0, 1.5708)
+            cr.arc(px + r, py + ps - r, r, 1.5708, 3.1416)
+            cr.arc(px + r, py + r, r, 3.1416, 4.7124)
+            cr.close_path()
+
+        if mode in ("shuffle", "question"):
+            pulse = 0.35 + 0.30 * abs(math.sin(time.time() * 2.6))
+            rr(x - 3, y - 3, s + 6, 5)
+            cr.set_source_rgba(*PAL["text"], pulse)
+            cr.set_line_width(1.2)
+            cr.stroke()
+        if not S["overlay_on"]:
+            rr(x, y, s, 3)
+            cr.set_source_rgba(*PAL["muted"], 0.65)
+            cr.set_line_width(1.4)
+            cr.stroke()
+            return False
+        if mode == "blinky":
+            rr(x, y, s, 3)
+            cr.set_source_rgba(*PAL["square"], 0.25)
+            cr.fill_preserve()
+            cr.set_source_rgba(*PAL["square"], 0.55)
+            cr.set_line_width(1.2)
+            cr.stroke()
+        elif mode == "done":
+            rr(x, y, s, 3)
+            cr.set_source_rgba(*PAL["square"], 0.92)
+            cr.fill()
+            cr.set_source_rgba(*PAL["bg"], 1)
+            cr.set_line_width(2.0)
+            cr.set_line_cap(1)
+            cr.move_to(x + 0.28 * s, y + 0.52 * s)
+            cr.line_to(x + 0.44 * s, y + 0.68 * s)
+            cr.line_to(x + 0.74 * s, y + 0.34 * s)
+            cr.stroke()
+        elif mode.startswith("fail"):
+            rr(x, y, s, 3)
+            cr.set_source_rgba(*PAL["square"], 0.85)
+            cr.fill()
+            cr.set_source_rgba(*PAL["bg"], 1)
+            cr.set_line_width(1.8)
+            cr.move_to(x + 0.32 * s, y + 0.32 * s)
+            cr.line_to(x + 0.68 * s, y + 0.68 * s)
+            cr.move_to(x + 0.68 * s, y + 0.32 * s)
+            cr.line_to(x + 0.32 * s, y + 0.68 * s)
+            cr.stroke()
+        elif mode == "question":
+            rr(x, y, s, 3)
+            cr.set_source_rgba(*PAL["square"], 0.92)
+            cr.fill()
+            cr.set_source_rgba(*PAL["bg"], 1)
+            cr.select_font_face("Inter", 0, 1)
+            cr.set_font_size(0.62 * s)
+            ext = cr.text_extents("?")
+            cr.move_to(x + s / 2 - (ext.width / 2 + ext.x_bearing),
+                       y + s / 2 - (ext.height / 2 + ext.y_bearing))
+            cr.show_text("?")
+        elif mode == "shuffle":
+            for dx, dy in ((0.06, 0.06), (0.52, 0.52)):
+                rr(x + dx * s, y + dy * s, 0.42 * s, 2)
+                cr.set_source_rgba(*PAL["square"], 0.92)
+                cr.fill()
+        else:
+            rr(x, y, s, 3)
+            cr.set_source_rgba(*PAL["square"], 0.92)
+            cr.fill()
+        return False
+
     def set_overlay(show: bool):
+        """Visualization mode on/off. On: the status pane (right)
+        joins the layout; the left pane is chosen automatically.
+        Off: a plain terminal, like any other."""
         S["overlay_on"] = show
         scene = S["scene"]
-        if S["layout"] == "split":
-            paned = S["paned"]
-            if show:
-                if scene.get_parent() is not paned:
-                    if scene.get_parent() is not None:
-                        scene.get_parent().remove(scene)
-                    paned.pack2(scene, True, False)
-                    paned.set_position(max(S["win"].get_size()[0] // 2, 200))
-                scene.set_visible(True)
-                S["square"].start()
-                tick()
-            else:
-                if scene.get_parent() is paned:
-                    paned.remove(scene)
-                S["square"].stop()
-                S["vte"].grab_focus()
-            return
-        scene.set_visible(show)
+        paned = S["paned"]
         if show:
+            if scene.get_parent() is not paned:
+                if scene.get_parent() is not None:
+                    scene.get_parent().remove(scene)
+                paned.pack2(scene, True, False)
+                paned.set_position(
+                    max(S["win"].get_size()[0] // 2, 200))
+            scene.set_visible(True)
             S["square"].start()
+            apply_left()
             tick()
         else:
+            if scene.get_parent() is paned:
+                paned.remove(scene)
+            S["left_stack"].set_visible_child_name("terminal")
             S["square"].stop()
             S["vte"].grab_focus()
+        if S.get("_ui_logged") != show:
+            S["_ui_logged"] = show
+            core.dlog("ui", f"visualization {'on' if show else 'off'}")
+        S["mode_btn"].queue_draw()
 
     def set_layout(mode: str):
-        """overlay = visualization floats over the terminal;
-        split = terminal | visualization side by side, 50/50."""
-        if mode == S.get("layout"):
-            return
-        S["layout"] = mode
-        scene = S["scene"]
-        if scene.get_parent() is not None:
-            scene.get_parent().remove(scene)
-        if mode == "overlay":
-            S["root_overlay"].add_overlay(scene)
-        if S["overlay_on"]:
-            set_overlay(True)
-        elif mode == "overlay":
-            scene.set_visible(False)
+        # Kept for old call sites: there is one pane layout now.
+        set_overlay(mode != "off")
+
+    def current_left_target() -> str:
+        if not S["overlay_on"]:
+            return "terminal"
+        if S.get("left_override"):
+            return S["left_override"]
+        return "content" if S.get("_agent_busy") else "terminal"
+
+    def apply_left():
+        target = current_left_target()
+        if S["left_stack"].get_visible_child_name() != target:
+            S["left_stack"].set_visible_child_name(target)
+            core.dlog("ui", f"left -> {target} "
+                            f"({'manual' if S.get('left_override') else 'auto'})")
+            if target == "terminal":
+                S["vte"].grab_focus()
+        S["mode_btn"].queue_draw()
+
+    def toggle_left():
+        """Clicking the square swaps the left pane by hand. The
+        manual choice lasts until the agent changes phase."""
+        cur = S["left_stack"].get_visible_child_name()
+        S["left_override"] = "terminal" if cur == "content" else "content"
+        apply_left()
+
+    def show_terminal():
+        S["left_override"] = "terminal"
+        apply_left()
 
     def user_close():
         """The user explicitly leaves the overlay: never auto-reopen
@@ -2450,15 +2580,16 @@ def run_gui(project_arg: str | None) -> int:
         kv = event.keyval
         ctrl_shift = (event.state & Gdk.ModifierType.CONTROL_MASK) and \
                      (event.state & Gdk.ModifierType.SHIFT_MASK)
-        if ctrl_shift and kv in (Gdk.KEY_O, Gdk.KEY_o):
+        if ctrl_shift and kv in (Gdk.KEY_O, Gdk.KEY_o) or \
+                ctrl_shift and kv in (Gdk.KEY_S, Gdk.KEY_s):
             set_overlay(not S["overlay_on"])
-            return True
-        if ctrl_shift and kv in (Gdk.KEY_S, Gdk.KEY_s):
-            S["btn_split"].set_active(not S["btn_split"].get_active())
             return True
         if kv == Gdk.KEY_Escape:
             if S["panel_on"]:
                 toggle_panel(False)
+            elif S["overlay_on"] and \
+                    S["left_stack"].get_visible_child_name() == "content":
+                show_terminal()
             elif S["overlay_on"]:
                 user_close()
             return True
@@ -2499,8 +2630,7 @@ def run_gui(project_arg: str | None) -> int:
     add_action("open-project", act_open_project)
     add_action("muse-task", act_muse_task)
     add_action("panel", lambda: toggle_panel())
-    add_action("split", lambda: S["btn_split"].set_active(
-        not S["btn_split"].get_active()))
+    add_action("split", lambda: set_overlay(not S["overlay_on"]))
     add_action("simulate", lambda: core.simulate())
     add_action("quit", lambda: app.quit())
 
@@ -2655,6 +2785,8 @@ def run_gui(project_arg: str | None) -> int:
     def tick():
         agent, _comp = display_state()
         S["pill"].set_text(f"● {agent.get('agent') or 'agent'} · {agent.get('state')}")
+        if S.get("mode_btn"):
+            S["mode_btn"].queue_draw()
         chk = core.liquid_check
         if chk["status"] == "ok":
             S["sys1_banner"].hide()
@@ -2733,6 +2865,12 @@ def run_gui(project_arg: str | None) -> int:
                            else "system1-activity")
             S["mode"] = mode
             S["square"].set_mode(mode)
+            S["_square_mode"] = mode
+            busy_now = state in BUSY_STATES
+            if busy_now != S.get("_agent_busy"):
+                S["_agent_busy"] = busy_now
+                S["left_override"] = None  # new phase: auto resumes
+            apply_left()
             if S.get("_last_mode") != mode:
                 core.dlog("mode", f"{S.get('_last_mode') or '—'} -> {mode} "
                                   f"via {via} (agent={agent.get('agent')}, "
