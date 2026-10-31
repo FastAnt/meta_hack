@@ -2624,7 +2624,8 @@ def run_gui(project_arg: str | None) -> int:
         def _anim_tick():
             game = S["game_ctl"].get("game")
             if S["overlay_on"] and game \
-                    and (game.get("scene") or {}).get("anim") \
+                    and ((game.get("scene") or {}).get("anim")
+                         or game.get("_paint")) \
                     and S["left_stack"].get_visible_child_name() \
                     == "content":
                 S["game_scene"].queue_draw()
@@ -2810,9 +2811,21 @@ def run_gui(project_arg: str | None) -> int:
             return False
         w, h = area.get_allocated_width(), area.get_allocated_height()
         _scene_geom(game, w, h)  # keeps hit-test geometry fresh
-        ce.paint_scene(cr, game, w, h, PALC,
-                       chosen=ctl["chosen"], answered=ctl["answered"],
-                       t=time.time() - (ctl.get("t0") or time.time()))
+        try:
+            ce.paint_scene(cr, game, w, h, PALC,
+                           chosen=ctl["chosen"],
+                           answered=ctl["answered"],
+                           t=time.time() - (ctl.get("t0") or time.time()))
+        except Exception as exc:
+            if not ctl.get("err_logged"):
+                ctl["err_logged"] = True
+                core.dlog("content", f"game {game.get('id')} failed "
+                                     f"to render: {exc}")
+            cr.select_font_face("Inter", 0, 0)
+            cr.set_font_size(14)
+            cr.set_source_rgba(*PALC["muted"], 0.9)
+            cr.move_to(24, 40)
+            cr.show_text("This game failed to render.")
         return False
 
     def on_game_scene_click(_w, event):
@@ -2820,13 +2833,9 @@ def run_gui(project_arg: str | None) -> int:
         game = ctl.get("game")
         if not game or ctl["answered"]:
             return False
-        scene = game.get("scene") or {}
-        target = None
-        if scene.get("type") == "orbits":
-            cx, cy = ctl["center"]
-            target = ce.orbit_hit(cx, cy, ctl["radii"], event.x, event.y)
-        elif scene.get("type") == "diagram":
-            target = ce.node_hit(ctl["rects"], event.x, event.y)
+        w = S["game_scene"].get_allocated_width()
+        h = S["game_scene"].get_allocated_height()
+        target = ce.pack_target_at(game, w, h, event.x, event.y)
         if target:
             game_answer(target)
         return False

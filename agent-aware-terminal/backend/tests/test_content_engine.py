@@ -27,6 +27,13 @@ class ShippedPacksTests(unittest.TestCase):
         for pack in packs:
             targets = {c["id"] for c in pack.get("choices") or []} | \
                 set(ce.scene_targets(pack))
+            if callable(pack.get("_target_at")):
+                view = ce.GameView(880, 620, 0.0, {})
+                for gx in range(0, 880, 26):
+                    for gy in range(0, 620, 26):
+                        hit = pack["_target_at"](view, gx, gy)
+                        if hit:
+                            targets.add(hit)
             self.assertIn(pack["answer"], targets, pack["id"])
 
 
@@ -181,6 +188,8 @@ class AnimationTests(unittest.TestCase):
     def test_shipped_games_are_animated(self):
         packs, _ = ce.scan_packs([GAMES_DIR])
         for pack in packs:
+            if callable(pack.get("_paint")):
+                continue  # motion asserted by the paint test
             self.assertTrue((pack.get("scene") or {}).get("anim"),
                             f"{pack['id']} should animate")
 
@@ -205,3 +214,53 @@ class AnimationTests(unittest.TestCase):
         for pack in packs:
             self.assertNotEqual(frame(pack, 0.2), frame(pack, 1.8),
                                 f"{pack['id']} does not move")
+
+
+class PythonGameTests(unittest.TestCase):
+    MODULE = '''
+GAME = {"id": "py-demo-001", "kind": "quiz", "title": "Py",
+        "question": "?", "choices": [{"id": "a", "label": "A"},
+        {"id": "b", "label": "B"}], "answer": "a",
+        "explanation": "because"}
+
+def paint(cr, view):
+    import math
+    r = 20 + 6 * math.sin(view.t * 3)
+    cr.arc(view.w / 2, view.h / 2, r, 0, 6.2832)
+    cr.set_source_rgba(*view.colors["square"], 1)
+    cr.fill()
+'''
+
+    def _engine(self, tmp, source):
+        pathlib.Path(tmp, "py_demo.py").write_text(source)
+        return ce.scan_packs([tmp])
+
+    def test_loads_and_validates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            packs, errors = self._engine(tmp, self.MODULE)
+            self.assertEqual(errors, [])
+            self.assertEqual(len(packs), 1)
+            self.assertTrue(callable(packs[0]["_paint"]))
+
+    def test_broken_module_is_an_error_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            packs, errors = self._engine(tmp, "def paint(:\n")
+            self.assertEqual(packs, [])
+            self.assertTrue(errors)
+            packs, errors = self._engine(tmp, "X = 1\n")
+            self.assertEqual(packs, [])
+            self.assertTrue(errors)
+
+    def test_click_dispatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = self.MODULE + '''
+
+def target_at(view, x, y):
+    return "left" if x < view.w / 2 else "right"
+'''
+            packs, _ = self._engine(tmp, src)
+            self.assertEqual(
+                ce.pack_target_at(packs[0], 800, 600, 10, 10), "left")
+            self.assertEqual(
+                ce.pack_target_at(packs[0], 800, 600, 700, 10),
+                "right")

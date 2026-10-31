@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import random
 from pathlib import Path
 
@@ -38,6 +39,40 @@ SCENES = ("orbits", "diagram", "network")
 ANIMS = {"orbits": ("orbit", "breathe"),
          "diagram": ("flow", "breathe"),
          "network": ("pulse", "breathe")}
+
+
+def load_py_pack(path):
+    """Import a .py game module. Returns (pack, None)|(None, why).
+
+    A game module defines:
+      GAME = {"id": ..., "kind": "quiz", "title": ..., ...meta...}
+      def paint(cr, view): ...            # any cairo drawing
+      def target_at(view, x, y): ...      # optional click targets
+    Games are trusted local code (same trust as the agent that
+    wrote them); the app only loads them from content dirs.
+    """
+    import hashlib
+    import importlib.util
+    path = pathlib.Path(path)
+    try:
+        src = path.read_bytes()
+        name = "aat_game_" + hashlib.sha1(
+            (str(path) + str(len(src))).encode()).hexdigest()[:12]
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except Exception as exc:
+        return None, f"import failed: {exc}"
+    meta = getattr(mod, "GAME", None)
+    if not isinstance(meta, dict):
+        return None, "module must define a GAME dict"
+    if not callable(getattr(mod, "paint", None)):
+        return None, "module must define paint(cr, view)"
+    pack = dict(meta)
+    pack["_paint"] = mod.paint
+    if callable(getattr(mod, "target_at", None)):
+        pack["_target_at"] = mod.target_at
+    return pack, None
 
 
 def scene_targets(pack: dict) -> list[str]:
@@ -61,6 +96,20 @@ def validate_pack(raw, source: str = "") -> tuple[dict | None, str | None]:
         return None, f"{pid}: unknown kind {raw.get('kind')!r}"
     if not raw.get("title"):
         return None, f"{pid}: missing title"
+    if "_paint" in raw:
+        # Code game: meta rules only — it draws itself.
+        choices = raw.get("choices") or []
+        cids = [c.get("id") for c in choices]
+        if len(cids) != len(set(cids)):
+            return None, f"{pid}: duplicate choice ids"
+        if raw.get("kind", "quiz") == "quiz" \
+                and not isinstance(raw.get("answer"), str) \
+                or (raw.get("kind", "quiz") == "quiz"
+                    and not raw.get("answer")):
+            return None, f"{pid}: quiz needs an answer target id"
+        pack = dict(raw)
+        pack["_source"] = source
+        return pack, None
     scene = raw.get("scene")
     if scene is not None:
         if not isinstance(scene, dict) or scene.get("type") not in SCENES:
@@ -102,16 +151,24 @@ def scan_packs(dirs) -> tuple[list[dict], list[str]]:
     packs, errors, seen = [], [], {}
     for d in dirs:
         try:
-            files = sorted(Path(d).rglob("*.json"))
+            files = sorted(
+                list(Path(d).rglob("*.json"))
+                + list(Path(d).rglob("*.py")))
         except Exception:
             continue
         for f in files:
-            try:
-                raw = json.loads(f.read_text(encoding="utf-8"))
-            except Exception as exc:
-                errors.append(f"{f}: {exc}")
-                continue
-            pack, err = validate_pack(raw, str(f))
+            if f.suffix == ".py":
+                pack, err = load_py_pack(f)
+                if pack is not None:
+                    pack["_source"] = str(f)
+                    pack, err = validate_pack(pack, str(f))
+            else:
+                try:
+                    raw = json.loads(f.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    errors.append(f"{f}: {exc}")
+                    continue
+                pack, err = validate_pack(raw, str(f))
             if err:
                 errors.append(f"{f}: {err}")
             elif pack["id"] in seen:
@@ -179,6 +236,24 @@ def network_positions(layers, w: float, h: float):
     return pts
 
 
+class GameView:
+    """What a code game's paint()/target_at() receives."""
+
+    def __init__(self, w, h, t, colors, chosen=None, answered=False):
+        self.w, self.h, self.t = w, h, t
+        self.colors = colors          # square/text/muted/bg -> (r,g,b)
+        self.chosen = chosen
+        self.answered = answered
+
+    # geometry helpers (same math the engine uses)
+    ring_radii = staticmethod(ring_radii)
+    node_rects = staticmethod(node_rects)
+    network_positions = staticmethod(network_positions)
+    orbit_hit = staticmethod(orbit_hit)
+    node_hit = staticmethod(node_hit)
+
+
+
 def paint_scene(cr, pack, w: float, h: float, colors: dict,
                 chosen: str | None = None, answered: bool = False,
                 t: float = 0.0):
@@ -188,6 +263,10 @@ def paint_scene(cr, pack, w: float, h: float, colors: dict,
     app and tools/test_game.py share this painter, so previews
     are faithful."""
     import math
+    if callable(pack.get("_paint")):
+        view = GameView(w, h, t, colors, chosen, answered)
+        pack["_paint"](cr, view)
+        return
     scene = pack.get("scene") or {}
     stype = scene.get("type")
     anim = scene.get("anim") or {}
@@ -337,6 +416,24 @@ def paint_scene(cr, pack, w: float, h: float, colors: dict,
             cr.stroke()
 
 
+def pack_target_at(pack, w: float, h: float, x: float, y: float):
+    """Resolve a click to a target id for any pack kind."""
+    if callable(pack.get("_target_at")):
+        view = GameView(w, h, 0.0, {})
+        try:
+            return pack["_target_at"](view, x, y)
+        except Exception:
+            return None
+    scene = pack.get("scene") or {}
+    if scene.get("type") == "orbits":
+        radii = ring_radii(w, h, int(scene.get("rings", 4)))
+        return orbit_hit(w / 2, h / 2, radii, x, y)
+    if scene.get("type") == "diagram":
+        return node_hit(node_rects(scene.get("nodes") or [], w, h),
+                        x, y)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Engine
 # ---------------------------------------------------------------------------
@@ -376,7 +473,9 @@ class ContentEngine:
         sig = []
         for d in self.dirs:
             try:
-                for f in sorted(d.rglob("*.json")):
+                files = sorted(list(d.rglob("*.json"))
+                               + list(d.rglob("*.py")))
+                for f in files:
                     sig.append((str(f), f.stat().st_mtime_ns))
             except Exception:
                 continue
