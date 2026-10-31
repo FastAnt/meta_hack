@@ -779,7 +779,7 @@ MODE_CAPTIONS = {
     "glitch": ("GLITCH", "Searching the system"),
     "trail": ("TRAIL", "Searching the web"),
     "shuffle": ("SHUFFLE", "The agent needs you"),
-    "flash": ("COLOR FLASH", "Thinking"),
+"flash": ("THINKING", "Thinking"),
     "build": ("BUILD ON", "Writing code"),
 }
 
@@ -1109,13 +1109,26 @@ def run_gui(project_arg: str | None) -> int:
                     self._fill(cr, x + off, yy + 1, s, s / rows - 2,
                                0.55 + 0.35 * rng.random(), r=2)
             elif mode == "trail":
-                w2 = 0.52 * s
-                for k in range(6, -1, -1):
-                    tt = t - k * 0.085
-                    cx = x + s / 2 + 0.21 * s * math.sin(tt * 1.25)
-                    cy = y + s / 2 + 0.17 * s * math.sin(tt * 1.65 + 1.0)
-                    self._fill(cr, cx - w2 / 2, cy - w2 / 2, w2, w2,
-                               0.10 + 0.13 * (6 - k) if k else 0.95)
+                # Reviewing pages: identical small squares fly through
+                # the big square left to right, slowing down and
+                # swelling slightly as they cross the center.
+                self._fill(cr, x, y, s, s, 0.08)
+                self._rr(cr, x, y, s, s, 0.045 * s)
+                cr.set_source_rgba(*PAL["square"], 0.35 * self._am)
+                cr.set_line_width(1.5)
+                cr.stroke()
+                n = 5
+                for i in range(n):
+                    u = ((t / 3.6) + i / n) % 1.0
+                    xx = u + (0.55 / (2 * math.pi)) * math.sin(2 * math.pi * u)
+                    fade = max(0.0, min(1.0, min(xx, 1.0 - xx) / 0.10))
+                    zoom = 1 + 0.5 * math.exp(
+                        -((xx - 0.5) ** 2) / (2 * 0.10 ** 2))
+                    sz = 0.16 * s * zoom
+                    cx = x + xx * s
+                    cy = y + s / 2
+                    self._fill(cr, cx - sz / 2, cy - sz / 2, sz, sz,
+                               0.92 * fade, r=0.03 * s)
             elif mode == "shuffle":
                 cell = 0.47 * s
                 gap = s - 2 * cell
@@ -1143,20 +1156,20 @@ def run_gui(project_arg: str | None) -> int:
                 cr.set_line_width(1.5)
                 cr.stroke()
             elif mode == "flash":
-                hue = (t * 0.045) % 1.0
-                r, g, b = colorsys.hsv_to_rgb(hue, 0.42, 0.88)
+                # Thinking: monochrome. A small square rotates inside
+                # the big one.
+                self._fill(cr, x, y, s, s, 0.08)
                 self._rr(cr, x, y, s, s, 0.045 * s)
-                cr.set_source_rgba(r, g, b, (0.28 + 0.1 * math.sin(t * 1.8)) * self._am)
-                cr.fill()
-                self._rr(cr, x, y, s, s, 0.045 * s)
-                cr.set_source_rgba(r, g, b, 0.9 * self._am)
-                cr.set_line_width(max(2.0, 0.012 * s))
+                cr.set_source_rgba(*PAL["square"], 0.35 * self._am)
+                cr.set_line_width(1.5)
                 cr.stroke()
-                inner = 0.36 * s
-                self._rr(cr, x + (s - inner) / 2, y + (s - inner) / 2,
-                         inner, inner, 0.04 * s)
-                cr.set_source_rgba(r, g, b, (0.55 + 0.3 * math.sin(t * 1.8)) * self._am)
-                cr.fill()
+                inner = 0.34 * s
+                cr.save()
+                cr.translate(x + s / 2, y + s / 2)
+                cr.rotate(t * 1.7)
+                self._fill(cr, -inner / 2, -inner / 2, inner, inner,
+                           0.92, r=0.03 * s)
+                cr.restore()
             else:  # build
                 self._rr(cr, x, y, s, s, 0.045 * s)
                 cr.set_source_rgba(*PAL["square"], 0.35 * self._am)
