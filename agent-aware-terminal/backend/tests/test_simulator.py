@@ -58,3 +58,20 @@ class AgentPidTests(unittest.TestCase):
         self.assertEqual(_agent_pid(tree, "codex"), 11)
         self.assertIsNone(_agent_pid(tree, "muse"))
         self.assertIsNone(_agent_pid(tree, None))
+
+
+class ScreenTextWiringTests(unittest.TestCase):
+    def test_screen_classifier_reachable(self):
+        """The GUI must hand a non-empty screen to classify_screen:
+        guard the S['vte'] wiring that once silently disabled it."""
+        native = _native()
+        src = pathlib.Path(native.__file__).read_text()
+        self.assertIn('S.get("term") or S.get("vte")', src)
+        self.assertIn('S["vte"] = vte', src)
+
+    def test_vte_text_coercion(self):
+        native = _native()
+        self.assertEqual(native._coerce_vte_text((None, [])), "")
+        self.assertEqual(native._coerce_vte_text(("abc", [])), "abc")
+        self.assertEqual(native._coerce_vte_text(None), "")
+        self.assertEqual(native._coerce_vte_text("x"), "x")

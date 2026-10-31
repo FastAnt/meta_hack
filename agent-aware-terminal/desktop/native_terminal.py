@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import tempfile
 import threading
 import time
 from collections import deque
@@ -413,6 +414,13 @@ class Core:
         Agents without a log adapter (Codex, Claude Code) are instead
         understood from their terminal screen: System 1 reads the
         console text (see LiquidClient.classify_screen)."""
+        if agent.get("agent") \
+                and agent.get("source") != "agent_event" and not screen:
+            if not getattr(self, "_noscreen_logged", False):
+                self._noscreen_logged = True
+                self.dlog("system1", "screen text unavailable: "
+                                     "classifier idle")
+            return
         if screen and agent.get("agent") \
                 and agent.get("source") != "agent_event":
             if not self.liquid.configured:
@@ -431,6 +439,9 @@ class Core:
 
             def _ask_screen():
                 self.liquid_stats["screen_calls"] += 1
+                if self.liquid_stats["screen_calls"] == 1:
+                    self.dlog("system1", f"reading screen "
+                                         f"({len(screen)} chars)")
                 try:
                     out = self.liquid.classify_screen(
                         screen, agent.get("agent") or "agent")
@@ -911,6 +922,50 @@ MODE_CAPTIONS = {
 WEB_TOOLS = {"web_search", "web_fetch"}
 LOCAL_SEARCH_TOOLS = {"search", "grep", "glob", "read_file", "file_read",
                       "read", "read_skill", "list_dir", "list_files"}
+
+
+def _coerce_vte_text(out) -> str:
+    if isinstance(out, tuple):
+        out = out[0] if out else ""
+    return out or ""
+
+
+def _read_vte_text(term) -> str:
+    """Best-effort read of the terminal's text. Some VTE builds
+    return None from get_text() (a C-side attributes assertion), so
+    try the alternatives and take the first that yields text."""
+    try:
+        text = _coerce_vte_text(term.get_text())
+        if text:
+            return text
+    except Exception:
+        pass
+    try:
+        rows = max(int(term.get_row_count()), 1)
+        cols = max(int(term.get_column_count()), 1)
+        text = _coerce_vte_text(term.get_text_range(0, 0, rows, cols))
+        if text:
+            return text
+    except Exception:
+        pass
+    try:
+        # get_text()/get_text_range() return None on some VTE builds
+        # (deprecated attributes array); dumping the terminal to a
+        # file always works.
+        from gi.repository import Gio
+        path = os.path.join(tempfile.gettempdir(), "aat-screen.txt")
+        gfile = Gio.File.new_for_path(path)
+        fos = gfile.replace(None, False, Gio.FileCreateFlags.NONE, None)
+        ok = term.write_contents_sync(fos, 0, None)
+        fos.close(None)
+        if ok:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+            if text.strip():
+                return text
+    except Exception:
+        pass
+    return ""
 
 
 def mode_for_agent(agent: dict) -> str:
@@ -2194,13 +2249,14 @@ def run_gui(project_arg: str | None) -> int:
 
     # ---------------- display state (mock for screenshots) ----------------
     def screen_text():
-        term = S.get("term")
+        term = S.get("term") or S.get("vte")
         if term is None:
             return ""
         try:
-            out = term.get_text()
-            text = out[0] if isinstance(out, tuple) else (out or "")
+            text = _read_vte_text(term)
         except Exception:
+            return ""
+        if not text:
             return ""
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
         return "\n".join(lines[-40:])
@@ -2369,8 +2425,14 @@ def run_gui(project_arg: str | None) -> int:
             mode = mode_for_agent(agent)
             # System-1 fills the gaps: generic "working" with no tool
             # is ambiguous — d1.1 classifies the real activity.
-            scr = screen_text()
-            core.classify_tick(agent, scr)
+            try:
+                scr = screen_text()
+                core.classify_tick(agent, scr)
+            except Exception as exc:  # the square must never freeze
+                if S.get("_scr_err") != str(exc):
+                    S["_scr_err"] = str(exc)
+                    core.dlog("system1", f"screen pipeline error: {exc}")
+                scr = ""
             ov = core.mode_override
             ambiguous = not agent.get("tool") or agent.get("state") == "working"
             via = "deterministic"
