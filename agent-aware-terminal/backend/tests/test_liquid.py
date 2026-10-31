@@ -198,3 +198,50 @@ class ModeClassificationTests(unittest.TestCase):
                             "command": "uvicorn app:main"}), "serve")
         self.assertEqual(m({"state": "tool_running", "tool": "bash",
                             "command": "npm test"}), "test")
+
+
+class FailureAndQuestionTests(unittest.TestCase):
+    def test_adapter_records_failure(self):
+        from backend.app.muse_adapter import MuseAdapter
+        evs = []
+        ad = MuseAdapter(evs.append, lambda: "")
+        ad._handle_record({"payload_type": "tool_batch.effect.started",
+                           "payload": {"record": {"tool_name": "bash"}}})
+        ad.state["command"] = "cargo build"
+        ad._handle_record({"payload_type": "tool_batch.effect.terminal",
+                           "payload": {"record": {"outcome": {
+                               "task_completion": {"terminal": {
+                                   "kind": "failed",
+                                   "reason": "process exited with status 101"}}}}}})
+        self.assertIsNotNone(ad.state["last_failure"])
+        self.assertEqual(ad.state["last_failure"]["command"], "cargo build")
+
+    def test_adapter_question_turn(self):
+        import time as _time
+        from backend.app.muse_adapter import MuseAdapter
+        evs = []
+        ad = MuseAdapter(evs.append, lambda: "")
+        ad._handle_record({"payload_type": "runtime.session",
+                           "payload": {"event": {
+                               "kind": "assistant_message_committed",
+                               "text": "Should I also update the README?"}}})
+        ad.state["state"] = "working"
+        ad._last_record_ts = _time.time() - 10
+        ad._check_quiet()
+        self.assertEqual(ad.state["state"], "awaiting_user")
+        self.assertEqual(ad.state["needs"], "answer")
+
+    def test_modes(self):
+        import time as _time
+        native = _load_native()
+        m = native.mode_for_agent
+        self.assertEqual(m({"state": "awaiting_user", "needs": "answer"}),
+                         "question")
+        self.assertEqual(m({"state": "awaiting_user", "needs": "approval"}),
+                         "shuffle")
+        self.assertEqual(m({"state": "tool_running", "tool": "bash",
+                            "command": "ls",
+                            "last_failure": {"tool": "bash",
+                                             "command": "cargo build",
+                                             "at": _time.time()}}),
+                         "fail_compile")

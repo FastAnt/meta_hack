@@ -75,7 +75,8 @@ class MuseAdapter(threading.Thread):
             "activity": "", "tool": None, "files": [], "plan": [],
             "source": "agent_event", "timestamp": _now(),
             "active_subagents": 0, "model": None, "task": "",
-            "last_reply": "", "command": None,
+            "last_reply": "", "command": None, "needs": None,
+            "last_failure": None,
         }
         self._stop = threading.Event()
         self._message_pending = False
@@ -138,10 +139,16 @@ class MuseAdapter(threading.Thread):
             ev["tool"] = self.state.get("tool")
         if "command" not in ev:
             ev["command"] = self.state.get("command")
+        if "needs" not in ev:
+            ev["needs"] = self.state.get("needs") \
+                if ev.get("state") == "awaiting_user" else None
+        if "last_failure" not in ev:
+            ev["last_failure"] = self.state.get("last_failure")
         if "files" not in ev:
             ev["files"] = self.state.get("files") or []
         self.state.update({k: ev[k] for k in
-                           ("state", "activity", "tool", "files", "command")
+                           ("state", "activity", "tool", "files", "command",
+                            "needs", "last_failure")
                            if k in ev})
         if "plan" in ev:
             self.state["plan"] = ev["plan"]
@@ -170,26 +177,41 @@ class MuseAdapter(threading.Thread):
                         text = part.get("text", "")
             if text:
                 self.state["task"] = _short(text, 300)
-                self._emit(state="planning", activity=f"Task: {_short(text, 120)}")
+                self._emit(state="planning", last_failure=None,
+                           activity=f"Task: {_short(text, 120)}")
             return
 
         if pt == "tool_batch.effect.started":
             self._message_pending = False
             record = payload.get("record") or {}
             tool = record.get("tool_name") or "tool"
-            self._emit(state="tool_running", tool=tool,
+            self._emit(state="tool_running", tool=tool, last_failure=None,
                        activity=f"Running {tool}")
             return
 
         if pt == "tool_batch.effect.terminal":
-            self._emit(state="working", tool=None, command=None,
-                       activity="Tool finished")
+            record = payload.get("record") or {}
+            term = ((record.get("outcome") or {}).get("task_completion")
+                    or {}).get("terminal") or {}
+            if term.get("kind") == "failed":
+                # A command/tool just failed: keep the fact (with the
+                # command that produced it) for the UI's fail states.
+                self._emit(state="working", tool=None, command=None,
+                           last_failure={
+                               "tool": self.state.get("tool"),
+                               "command": self.state.get("command"),
+                               "reason": term.get("reason") or "failed",
+                               "at": time.time()},
+                           activity=f"Failed: {_short(term.get('reason') or 'tool failed', 110)}")
+            else:
+                self._emit(state="working", tool=None, command=None,
+                           activity="Tool finished")
             return
 
         if pt == "approval_wait.effect.started":
             record = payload.get("record") or {}
             tool = record.get("tool_name") or "an action"
-            self._emit(state="awaiting_user", tool=tool,
+            self._emit(state="awaiting_user", needs="approval", tool=tool,
                        activity=f"The agent is waiting for approval: {tool}. "
                                 "Switch back to the terminal.")
             return
@@ -321,8 +343,14 @@ class MuseAdapter(threading.Thread):
                 and self._last_record_ts \
                 and time.time() - self._last_record_ts > 4:
             self._message_pending = False
-            self._emit(state="completed", tool=None,
-                       activity=self._last_message or "Turn finished")
+            msg = (self._last_message or "").strip()
+            if msg.endswith("?"):
+                # The agent ended its turn with a direct question.
+                self._emit(state="awaiting_user", needs="answer",
+                           tool=None, activity=msg)
+            else:
+                self._emit(state="completed", tool=None,
+                           activity=msg or "Turn finished")
 
     # -- main loop -------------------------------------------------------------
     def run(self):

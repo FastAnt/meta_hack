@@ -778,6 +778,11 @@ button.quiet:hover {{ color: {p['text']}; }}
 
 
 MODE_CAPTIONS = {
+    "question": ("QUESTION", "The agent is asking"),
+    "fail_compile": ("BUILD FAILED", "Build failed"),
+    "fail_link": ("LINK FAILED", "Linking failed"),
+    "fail_test": ("TESTS FAILED", "Tests failed"),
+    "fail": ("FAILED", "Something failed"),
     "download": ("DOWNLOADING", "Downloading"),
     "test": ("TESTING", "Running tests"),
     "git": ("GIT", "Working with git"),
@@ -810,7 +815,17 @@ def mode_for_agent(agent: dict) -> str:
     if st == "completed":
         return "done"
     if st == "awaiting_user":
-        return "shuffle"
+        return "question" if agent.get("needs") == "answer" else "shuffle"
+    lf = agent.get("last_failure")
+    if lf and st in ("working", "tool_running"):
+        at = lf.get("at")
+        if at is None or time.time() - float(at) < 6:
+            probe = {"state": "tool_running",
+                     "tool": lf.get("tool") or "bash",
+                     "command": lf.get("command") or "",
+                     "activity": ""}
+            return {"compile": "fail_compile", "link": "fail_link",
+                    "test": "fail_test"}.get(mode_for_agent(probe), "fail")
     if st in ("planning", "starting"):
         return "flash"
     if st in ("working", "tool_running"):
@@ -1369,6 +1384,154 @@ def run_gui(project_arg: str | None) -> int:
                     hh = sz * squash
                     self._fill(cr, sx, yy + (sz - hh), sz, hh,
                                0.92 * fade, r=0.02 * s)
+            elif mode == "question":
+                # The agent is asking the user: a big breathing "?".
+                self._fill(cr, x, y, s, s, 0.08)
+                self._rr(cr, x, y, s, s, 0.045 * s)
+                cr.set_source_rgba(*PAL["square"], 0.35 * self._am)
+                cr.set_line_width(1.5)
+                cr.stroke()
+                cr.save()
+                cr.translate(x + s / 2, y + s / 2)
+                breathe = 1 + 0.045 * math.sin(t * 2.2)
+                cr.scale(breathe, breathe)
+                cr.select_font_face("Inter", 0, 1)
+                cr.set_font_size(0.52 * s)
+                ext = cr.text_extents("?")
+                cr.set_source_rgba(*PAL["square"], 0.95 * self._am)
+                cr.move_to(-ext.x_bearing - ext.width / 2,
+                           -ext.y_bearing - ext.height / 2)
+                cr.show_text("?")
+                cr.restore()
+            elif mode == "fail_compile":
+                # Build broke: the next piece lands and shatters.
+                self._fill(cr, x, y, s, s, 0.08)
+                self._rr(cr, x, y, s, s, 0.045 * s)
+                cr.set_source_rgba(*PAL["square"], 0.35 * self._am)
+                cr.set_line_width(1.5)
+                cr.stroke()
+                cols = 5
+                cw = 0.148 * s
+                gx = x + (s - cols * cw) / 2
+                floor = y + 0.93 * s
+                for col in range(cols):
+                    self._fill(cr, gx + col * cw + 1.5, floor - cw + 1.5,
+                               cw - 3, cw - 3, 0.85, r=0.02 * s)
+                for col in (0, 1, 3, 4):
+                    self._fill(cr, gx + col * cw + 1.5, floor - 2 * cw + 1.5,
+                               cw - 3, cw - 3, 0.85, r=0.02 * s)
+                cyc = t % 2.8
+                px = gx + 2 * cw
+                py = floor - 3 * cw
+                if cyc < 0.55:
+                    fp = cyc / 0.55
+                    yy = y + 0.04 * s + (py - y - 0.04 * s) * fp ** 1.5
+                    self._fill(cr, px + 1.5, yy + 1.5, cw - 3, cw - 3,
+                               0.95, r=0.02 * s)
+                elif cyc < 1.25:
+                    lp = (cyc - 0.55) / 0.7
+                    mini = (cw - 3) / 2
+                    for k in range(4):
+                        dx = (k % 2 - 0.5) * 0.10 * s * lp
+                        dy = 0.30 * s * lp ** 2 + (k // 2) * mini
+                        self._fill(cr, px + 1.5 + (k % 2) * mini + dx,
+                                   py + 1.5 + dy, mini - 1, mini - 1,
+                                   0.92 * (1 - lp), r=2)
+            elif mode == "fail_link":
+                # Linking broke: the squares collide and bounce apart.
+                self._fill(cr, x, y, s, s, 0.08)
+                self._rr(cr, x, y, s, s, 0.045 * s)
+                cr.set_source_rgba(*PAL["square"], 0.35 * self._am)
+                cr.set_line_width(1.5)
+                cr.stroke()
+                sz = 0.21 * s
+                cx, cy = x + s / 2, y + s / 2
+                cyc = t % 2.2
+                if cyc < 0.5:
+                    fp = 1 - (1 - cyc / 0.5) ** 2
+                    off = 0.30 * s - (0.30 - 0.105) * s * fp
+                elif cyc < 1.0:
+                    fp = (cyc - 0.5) / 0.5
+                    off = 0.105 * s + 0.10 * s * (1 - (1 - fp) ** 3)
+                else:
+                    off = 0.205 * s + 0.004 * s * math.sin(t * 30)
+                self._fill(cr, cx - off - sz / 2, cy - sz / 2, sz, sz,
+                           0.92, r=0.03 * s)
+                self._fill(cr, cx + off - sz / 2, cy - sz / 2, sz, sz,
+                           0.92, r=0.03 * s)
+                if 0.5 <= cyc < 0.85:  # impact spark: a small X
+                    a = 0.9 * (1 - (cyc - 0.5) / 0.35)
+                    r_ = 0.055 * s
+                    cr.set_source_rgba(*PAL["square"], a * self._am)
+                    cr.set_line_width(max(2.0, 0.014 * s))
+                    cr.set_line_cap(1)
+                    cr.move_to(cx - r_, cy - r_)
+                    cr.line_to(cx + r_, cy + r_)
+                    cr.move_to(cx + r_, cy - r_)
+                    cr.line_to(cx - r_, cy + r_)
+                    cr.stroke()
+            elif mode == "fail_test":
+                # Tests failed: checks pass, then one square gets an
+                # X and shakes; the rest never run.
+                self._fill(cr, x, y, s, s, 0.08)
+                self._rr(cr, x, y, s, s, 0.045 * s)
+                cr.set_source_rgba(*PAL["square"], 0.35 * self._am)
+                cr.set_line_width(1.5)
+                cr.stroke()
+                n = 5
+                sz = 0.145 * s
+                gap = (0.82 * s - n * sz) / (n - 1)
+                gx = x + (s - 0.82 * s) / 2
+                cy = y + s / 2
+                cyc = t % 3.0
+                bad = 3
+                for i in range(n):
+                    on = cyc > 0.25 + i * 0.35 and i <= bad
+                    sx = gx + i * (sz + gap)
+                    if i == bad and on:
+                        sx += 0.006 * s * math.sin(t * 34)
+                    self._fill(cr, sx, cy - sz / 2, sz, sz,
+                               0.95 if on else 0.15, r=3)
+                    if on:
+                        cr.set_source_rgba(*PAL["bg_rgb"], 0.92 * self._am)
+                        cr.set_line_width(max(1.8, 0.11 * sz))
+                        cr.set_line_cap(1)
+                        if i == bad:
+                            r_ = 0.26 * sz
+                            cr.move_to(sx + sz / 2 - r_, cy - r_)
+                            cr.line_to(sx + sz / 2 + r_, cy + r_)
+                            cr.move_to(sx + sz / 2 + r_, cy - r_)
+                            cr.line_to(sx + sz / 2 - r_, cy + r_)
+                        else:
+                            cr.move_to(sx + 0.27 * sz, cy + 0.03 * sz)
+                            cr.line_to(sx + 0.43 * sz, cy + 0.18 * sz)
+                            cr.line_to(sx + 0.74 * sz, cy - 0.18 * sz)
+                        cr.stroke()
+            elif mode == "fail":
+                # Something broke: the square cracks into two halves.
+                self._fill(cr, x, y, s, s, 0.08)
+                self._rr(cr, x, y, s, s, 0.045 * s)
+                cr.set_source_rgba(*PAL["square"], 0.35 * self._am)
+                cr.set_line_width(1.5)
+                cr.stroke()
+                inner = 0.40 * s
+                ix, iy = x + (s - inner) / 2, y + (s - inner) / 2
+                cyc = t % 3.0
+                gap = 0.0
+                alpha = 0.92
+                if cyc > 0.7:
+                    fp = min((cyc - 0.7) / 0.5, 1.0)
+                    gap = 0.055 * s * (1 - (1 - fp) ** 2)
+                if cyc > 2.45:
+                    alpha = 0.92 * max(0.0, (3.0 - cyc) / 0.55)
+                for side in (-1, 1):
+                    cr.save()
+                    hx = ix if side < 0 else ix + inner / 2
+                    cr.rectangle(hx, iy - 2, inner / 2, inner + 4)
+                    cr.clip()
+                    self._fill(cr, ix + side * gap, iy, inner, inner,
+                               alpha, r=0.03 * s)
+                    cr.restore()
             elif mode == "download":
                 # Downloading: squares rain in and pile up at the
                 # bottom of the big square.
@@ -1417,8 +1580,17 @@ def run_gui(project_arg: str | None) -> int:
                         pop = 1 + 0.25 * math.sin(
                             math.pi * (cyc - 0.25 - i * 0.35) / 0.18)
                     d = sz * pop
-                    self._fill(cr, gx + i * (sz + gap) + (sz - d) / 2,
-                               cy - d / 2, d, d, 0.95 if on else 0.15, r=3)
+                    sx = gx + i * (sz + gap) + (sz - d) / 2
+                    self._fill(cr, sx, cy - d / 2, d, d,
+                               0.95 if on else 0.15, r=3)
+                    if on:
+                        cr.set_source_rgba(*PAL["bg_rgb"], 0.92 * self._am)
+                        cr.set_line_width(max(1.6, 0.10 * d))
+                        cr.set_line_cap(1)
+                        cr.move_to(sx + 0.27 * d, cy + 0.03 * d)
+                        cr.line_to(sx + 0.43 * d, cy + 0.18 * d)
+                        cr.line_to(sx + 0.74 * d, cy - 0.18 * d)
+                        cr.stroke()
             elif mode == "git":
                 # Git: history grows — squares conveyor upward, the
                 # newest at the bottom, the oldest fading at the top.
@@ -1955,6 +2127,16 @@ def run_gui(project_arg: str | None) -> int:
                        "command": "uvicorn app:main --port 8000",
                        "activity": "bash: uvicorn app:main --port 8000",
                        "files": []}, "api"),
+            "question": ({"state": "awaiting_user", "needs": "answer",
+                          "activity": "Should I also update the README?"}, None),
+            "failcompile": ({"state": "tool_running", "tool": "bash",
+                             "command": "g++ -c main.cpp -o main.o",
+                             "activity": "bash: g++ -c main.cpp -o main.o",
+                             "files": []}, "core"),
+            "failtest": ({"state": "tool_running", "tool": "bash",
+                          "command": "python -m pytest -q",
+                          "activity": "bash: python -m pytest -q",
+                          "files": []}, "tests"),
             "delete": ({"state": "tool_running", "tool": "bash",
                         "command": "rm -rf cpp_app",
                         "activity": "bash: rm -rf cpp_app",
@@ -1967,6 +2149,11 @@ def run_gui(project_arg: str | None) -> int:
         m, comp_name = mocks.get(MOCK, mocks["idle"])
         agent.update(base)
         agent.update(m)
+        if MOCK.startswith("fail"):
+            agent["last_failure"] = {
+                "tool": "bash", "command": m.get("command"),
+                "reason": "process exited with status 1",
+                "at": time.time()}
         if comp_name and core.project:
             comp = next((c for c in core.project["components"]
                          if c["name"] == comp_name), comp)
