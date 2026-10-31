@@ -505,11 +505,13 @@ class Core:
             return
         snap = self.snapshot
         inferred = snap.get("inferred") or {}
+        fg_cmd = (snap.get("foreground") or {}).get("cmdline", "")
         cli = snap.get("agent_cli_detected")
         if cli:
             self.agent_state = {
                 "agent": cli, "state": inferred.get("state", "working"),
                 "activity": (snap.get("foreground") or {}).get("cmdline", ""),
+                "command": fg_cmd,
                 "source": "heuristic",
                 "confidence": inferred.get("confidence"),
                 "files": [], "plan": [],
@@ -517,7 +519,9 @@ class Core:
         else:
             self.agent_state = {
                 "agent": None, "state": inferred.get("state", "idle"),
-                "activity": (snap.get("foreground") or {}).get("process", ""),
+                "activity": fg_cmd[:110] or
+                (snap.get("foreground") or {}).get("process", ""),
+                "command": fg_cmd,
                 "source": "heuristic", "files": [], "plan": [],
             }
 
@@ -774,6 +778,11 @@ button.quiet:hover {{ color: {p['text']}; }}
 
 
 MODE_CAPTIONS = {
+    "download": ("DOWNLOADING", "Downloading"),
+    "test": ("TESTING", "Running tests"),
+    "git": ("GIT", "Working with git"),
+    "extract": ("EXTRACTING", "Extracting"),
+    "serve": ("SERVING", "Server running"),
     "delete": ("DELETING", "Deleting files"),
     "compile": ("COMPILING", "Compiling"),
     "link": ("LINKING", "Linking"),
@@ -810,25 +819,51 @@ def mode_for_agent(agent: dict) -> str:
         act = (agent.get("activity") or "").lower()
         if cmd:
             # What kind of shell work is this? (facts from the command)
-            if re.search(r"(^|[;&|]\s*)(rm|unlink|shred|rmdir)\b", cmd):
+            lead = r"(?:^|[;&|]\s*)(?:sudo\s+)?(?:-\S+\s+)*"
+            if re.search(lead + r"(rm|unlink|shred|rmdir)\b", cmd):
                 return "delete"
-            if re.search(r"(^|[;&|]\s*)(ld|lld|gold|mold)\b", cmd) \
+            if re.search(r"\b(apt|apt-get|dnf|yum|pacman)\b[^;&|]*\b"
+                         r"(update|upgrade|dist-upgrade|install|remove)\b"
+                         r"|\b(pip3?|uv|npm|pnpm|yarn|brew|gem|poetry"
+                         r"|conda)\b[^;&|]*\b(install|add)\b"
+                         r"|\bcargo\s+add\b|\bgo\s+get\b", cmd):
+                return "install"
+            if re.search(lead + r"(curl|wget|aria2c?)\b", cmd) \
+                    or re.search(r"\bgit\s+(clone|fetch|pull)\b", cmd) \
+                    or re.search(r"\bdocker\s+(pull|push)\b", cmd):
+                return "download"
+            if re.search(r"\bgit\s+(commit|push|add|merge|rebase|checkout"
+                         r"|switch|branch|status|log|diff|stash)\b", cmd):
+                return "git"
+            if re.search(lead + r"(unzip|unar|gunzip|bunzip2|unxz)\b", cmd) \
+                    or re.search(r"\btar\b[^;&|]*\bx", cmd) \
+                    or re.search(r"\b7z\s+x\b", cmd):
+                return "extract"
+            if re.search(r"\b(uvicorn|gunicorn|waitress|hypercorn)\b"
+                         r"|\bflask\s+run\b|\brunserver\b"
+                         r"|\bhttp\.server\b|\bnpm\s+(start|run\s+dev)\b"
+                         r"|\b(vite|next\s+dev|ng\s+serve)\b"
+                         r"|\bdocker\s+(run|compose\s+up|up)\b"
+                         r"|\bphp\s+-S\b", cmd):
+                return "serve"
+            if re.search(r"\b(pytest|tox|jest|vitest|mocha|phpunit"
+                         r"|rspec|unittest)\b|\b(cargo|go|npm|pnpm|yarn)"
+                         r"\s+test\b|\bpython3?\s+-m\s+(pytest"
+                         r"|unittest)\b|\bmake\s+(test|check)\b", cmd):
+                return "test"
+            if re.search(lead + r"(ld|lld|gold|mold)\b", cmd) \
                     or "linking" in act \
                     or (re.search(r"\b(gcc|g\+\+|clang)\b", cmd)
                         and "-c" not in cmd and ".o" in cmd):
                 return "link"
-            if re.search(r"\b(pip3?|uv|npm|pnpm|yarn|apt|apt-get|brew|gem"
-                         r"|poetry|conda|dnf|pacman)\b[^;&|]*\b(install|add)\b"
-                         r"|\bcargo\s+add\b|\bgo\s+get\b", cmd):
-                return "install"
-            if re.search(r"(^|[;&|]\s*)(cp|rsync|scp|sftp|robocopy)\b", cmd):
+            if re.search(lead + r"(cp|rsync|scp|sftp|robocopy)\b", cmd):
                 return "copy"
             if re.search(r"\b(make|cmake|ninja|gcc|g\+\+|clang|cc|rustc"
                          r"|javac|kotlinc|swiftc|tsc|webpack|mvn|gradle"
                          r"|dotnet)\b|\b(cargo|go|npm|pnpm|yarn)\s+"
-                         r"(build|test|check)\b|\bnpm\s+run\s+build\b"
-                         r"|\b(pytest|tox)\b|\bpython3?\s+-m\s+"
-                         r"(pytest|unittest|build)\b", cmd):
+                         r"(build|check)\b|\bnpm\s+run\s+build\b"
+                         r"|\bpython3?\s+-m\s+build\b"
+                         r"|\bdocker\s+(build|compose\s+build)\b", cmd):
                 return "compile"
         if tool in WEB_TOOLS:
             return "trail"
@@ -1334,6 +1369,124 @@ def run_gui(project_arg: str | None) -> int:
                     hh = sz * squash
                     self._fill(cr, sx, yy + (sz - hh), sz, hh,
                                0.92 * fade, r=0.02 * s)
+            elif mode == "download":
+                # Downloading: squares rain in and pile up at the
+                # bottom of the big square.
+                self._fill(cr, x, y, s, s, 0.08)
+                self._rr(cr, x, y, s, s, 0.045 * s)
+                cr.set_source_rgba(*PAL["square"], 0.35 * self._am)
+                cr.set_line_width(1.5)
+                cr.stroke()
+                cols = 6
+                cw = 0.115 * s
+                gx = x + (s - cols * cw) / 2
+                floor = y + 0.92 * s
+                total = 12
+                cyc = t % 3.4
+                done_n = int(cyc / 0.24)
+                for i in range(min(done_n, total)):
+                    col, row = i % cols, i // cols
+                    self._fill(cr, gx + col * cw + 1, floor - (row + 1) * cw + 1,
+                               cw - 2, cw - 2, 0.85, r=2)
+                if done_n < total:
+                    col, row = done_n % cols, done_n // cols
+                    fp = (cyc % 0.24) / 0.24
+                    yy = y + 0.05 * s + (floor - (row + 1) * cw - y - 0.05 * s) * fp ** 1.4
+                    self._fill(cr, gx + col * cw + 1, yy + 1, cw - 2, cw - 2,
+                               0.95, r=2)
+                if cyc > 3.0:
+                    pass  # pile complete; loop restarts
+            elif mode == "test":
+                # Running tests: squares light up one by one as the
+                # checks pass, then all hold together.
+                self._fill(cr, x, y, s, s, 0.08)
+                self._rr(cr, x, y, s, s, 0.045 * s)
+                cr.set_source_rgba(*PAL["square"], 0.35 * self._am)
+                cr.set_line_width(1.5)
+                cr.stroke()
+                n = 5
+                sz = 0.145 * s
+                gap = (0.82 * s - n * sz) / (n - 1)
+                gx = x + (s - 0.82 * s) / 2
+                cy = y + s / 2
+                cyc = t % 2.9
+                for i in range(n):
+                    on = cyc > 0.25 + i * 0.35
+                    pop = 1.0
+                    if on and cyc - (0.25 + i * 0.35) < 0.18:
+                        pop = 1 + 0.25 * math.sin(
+                            math.pi * (cyc - 0.25 - i * 0.35) / 0.18)
+                    d = sz * pop
+                    self._fill(cr, gx + i * (sz + gap) + (sz - d) / 2,
+                               cy - d / 2, d, d, 0.95 if on else 0.15, r=3)
+            elif mode == "git":
+                # Git: history grows — squares conveyor upward, the
+                # newest at the bottom, the oldest fading at the top.
+                self._fill(cr, x, y, s, s, 0.08)
+                self._rr(cr, x, y, s, s, 0.045 * s)
+                cr.set_source_rgba(*PAL["square"], 0.35 * self._am)
+                cr.set_line_width(1.5)
+                cr.stroke()
+                sz = 0.17 * s
+                cx = x + s / 2
+                base = y + 0.88 * s
+                step = 0.215 * s
+                shift = (t % 0.9) / 0.9
+                for i in range(5):
+                    yy = base - (i + shift) * step
+                    if yy < y + 0.06 * s:
+                        continue
+                    alpha = 0.95
+                    if i + shift > 3.4:
+                        alpha = max(0.0, 0.95 * (4.4 - i - shift))
+                    self._fill(cr, cx - sz / 2, yy - sz, sz, sz, alpha, r=3)
+            elif mode == "extract":
+                # Extracting: one archive square unfolds into a 3x3
+                # of contents.
+                self._fill(cr, x, y, s, s, 0.08)
+                self._rr(cr, x, y, s, s, 0.045 * s)
+                cr.set_source_rgba(*PAL["square"], 0.35 * self._am)
+                cr.set_line_width(1.5)
+                cr.stroke()
+                inner = 0.34 * s
+                ix, iy = x + (s - inner) / 2, y + (s - inner) / 2
+                cyc = t % 3.0
+                if cyc < 0.55:
+                    self._fill(cr, ix, iy, inner, inner, 0.92, r=0.03 * s)
+                else:
+                    fp = min((cyc - 0.55) / 0.8, 1.0)
+                    fp = 1 - (1 - fp) ** 3
+                    fade = 1.0 if cyc < 2.5 else max(0.0, (3.0 - cyc) / 0.5)
+                    mini = inner / 3
+                    spread = 0.16 * s * fp
+                    for r_i in range(3):
+                        for c_i in range(3):
+                            ox = (c_i - 1) * spread
+                            oy = (r_i - 1) * spread
+                            self._fill(cr, ix + c_i * mini + 1 + ox,
+                                       iy + r_i * mini + 1 + oy,
+                                       mini - 2, mini - 2,
+                                       0.92 * fade, r=2)
+            elif mode == "serve":
+                # Serving: a steady square broadcasting — outline
+                # waves expand and fade.
+                self._fill(cr, x, y, s, s, 0.08)
+                self._rr(cr, x, y, s, s, 0.045 * s)
+                cr.set_source_rgba(*PAL["square"], 0.35 * self._am)
+                cr.set_line_width(1.5)
+                cr.stroke()
+                cx, cy = x + s / 2, y + s / 2
+                inner = 0.30 * s * (1 + 0.03 * math.sin(t * 2.0))
+                self._fill(cr, cx - inner / 2, cy - inner / 2, inner, inner,
+                           0.92, r=0.03 * s)
+                for k in range(2):
+                    fp = ((t * 0.45) + k * 0.5) % 1.0
+                    w = inner + (0.86 * s - inner) * fp
+                    cr.set_source_rgba(*PAL["square"],
+                                       0.5 * (1 - fp) * self._am)
+                    cr.set_line_width(2.0)
+                    self._rr(cr, cx - w / 2, cy - w / 2, w, w, 0.05 * s)
+                    cr.stroke()
             elif mode == "delete":
                 # Deleting: the file square trembles, breaks into a
                 # 3x3 of crumbs that rain down and fade away.
@@ -1782,6 +1935,26 @@ def run_gui(project_arg: str | None) -> int:
                       "command": "cp -r assets/ dist/assets/",
                       "activity": "bash: cp -r assets/ dist/assets/",
                       "files": []}, "storage"),
+            "download": ({"state": "tool_running", "tool": "bash",
+                          "command": "curl -O https://example.com/app.tar.gz",
+                          "activity": "bash: curl -O https://example.com/app.tar.gz",
+                          "files": []}, None),
+            "test": ({"state": "tool_running", "tool": "bash",
+                      "command": "python -m pytest -q",
+                      "activity": "bash: python -m pytest -q",
+                      "files": []}, "tests"),
+            "git": ({"state": "tool_running", "tool": "bash",
+                     "command": "git push origin main",
+                     "activity": "bash: git push origin main",
+                     "files": []}, None),
+            "extract": ({"state": "tool_running", "tool": "bash",
+                         "command": "tar -xzf app.tar.gz",
+                         "activity": "bash: tar -xzf app.tar.gz",
+                         "files": []}, None),
+            "serve": ({"state": "tool_running", "tool": "bash",
+                       "command": "uvicorn app:main --port 8000",
+                       "activity": "bash: uvicorn app:main --port 8000",
+                       "files": []}, "api"),
             "delete": ({"state": "tool_running", "tool": "bash",
                         "command": "rm -rf cpp_app",
                         "activity": "bash: rm -rf cpp_app",

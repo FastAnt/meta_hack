@@ -178,10 +178,23 @@ class ModeClassificationTests(unittest.TestCase):
         self.assertEqual(m({"state": "tool_running", "tool": "bash",
                             "command": "ld -o app main.o"}), "link")
         self.assertEqual(m({"state": "tool_running", "tool": "bash",
-                            "command": "python -m pytest -q"}), "compile")
+                            "command": "python -m pytest -q"}), "test")
         self.assertEqual(m({"state": "tool_running", "tool": "bash",
                             "command": "ls -la"}), "build")
         self.assertEqual(m({"state": "tool_running", "tool": "web_fetch",
                             "command": None}), "trail")
         self.assertEqual(m({"state": "tool_running", "tool": "bash",
                             "command": "rm -rf cpp_app"}), "delete")
+        self.assertEqual(m({"state": "tool_running", "tool": "bash",
+                            "command": "sudo apt update"}), "install")
+        self.assertEqual(m({"state": "tool_running", "tool": "bash",
+                            "command": "curl -O https://x.dev/a.tgz"}),
+                         "download")
+        self.assertEqual(m({"state": "tool_running", "tool": "bash",
+                            "command": "git push origin main"}), "git")
+        self.assertEqual(m({"state": "tool_running", "tool": "bash",
+                            "command": "tar -xzf a.tgz"}), "extract")
+        self.assertEqual(m({"state": "tool_running", "tool": "bash",
+                            "command": "uvicorn app:main"}), "serve")
+        self.assertEqual(m({"state": "tool_running", "tool": "bash",
+                            "command": "npm test"}), "test")
