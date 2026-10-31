@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT))
 
 from backend.app import content_engine as ce  # noqa: E402
 
-GAMES_DIR = ROOT / "content" / "games"
+GAMES_DIR = ROOT / "games-base"
 
 
 class ShippedPacksTests(unittest.TestCase):
@@ -138,3 +138,26 @@ class GeometryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoRepeatCycleTests(unittest.TestCase):
+    def test_full_cycle_without_repeats_then_resets(self):
+        engine = ce.ContentEngine([GAMES_DIR], seed=3)
+        seen = [engine.next_game()["id"] for _ in range(3)]
+        self.assertEqual(len(set(seen)), 3)
+        fourth = engine.next_game()["id"]
+        self.assertEqual(engine.progress(), (1, 3))
+        self.assertNotEqual(fourth, seen[-1])
+
+    def test_cycle_survives_restart_via_state_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = pathlib.Path(tmp, "state.json")
+            first = ce.ContentEngine([GAMES_DIR], seed=5,
+                                     state_path=state)
+            served = {first.next_game()["id"],
+                      first.next_game()["id"]}
+            second = ce.ContentEngine([GAMES_DIR], seed=5,
+                                      state_path=state)
+            nxt = second.next_game()["id"]
+            self.assertNotIn(nxt, served)  # still the unseen one
+            self.assertEqual(second.progress(), (3, 3))

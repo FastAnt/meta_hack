@@ -28,9 +28,9 @@ fi
   --hidden-import backend.app.liquid_client \
   --hidden-import backend.app.content_engine \
   --collect-all gi desktop/native_terminal.py
-rm -rf dist/agent-aware-terminal/content
-cp -r content dist/agent-aware-terminal/content
-echo "Content packs copied next to the binary (external, hot-swappable)."
+rm -rf dist/agent-aware-terminal/content dist/agent-aware-terminal/games-base
+cp -r games-base dist/agent-aware-terminal/games-base
+echo "Base game packs copied next to the binary (external, from the games submodule)."
 echo
 echo "Done: dist/agent-aware-terminal/agent-aware-terminal"
 echo "Run: MODEL_API_KEY=... ./dist/agent-aware-terminal/agent-aware-terminal"

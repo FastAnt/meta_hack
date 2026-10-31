@@ -1216,6 +1216,8 @@ button.choice:hover {{ border-color: {p['text']}; color: {p['text']}; }}
 button.choice-right {{ background: {p['text']}; color: {p['bg']}; border-color: {p['text']}; }}
 button.choice-wrong {{ color: {p['muted']}; border-color: {p['muted']}; }}
 button.game-next {{ background: transparent; color: {p['text']}; border: 1px solid {p['text']}; border-radius: 9999px; padding: 7px 16px; font-family: {GROTESK}; font-size: 13px; box-shadow: none; }}
+button.feed-action {{ background: transparent; color: {p['body']}; border: 1px solid {p['border']}; border-radius: 9999px; min-width: 38px; min-height: 32px; font-family: {GROTESK}; font-size: 15px; box-shadow: none; }}
+button.feed-action:hover {{ border-color: {p['text']}; color: {p['text']}; }}
 .mode-agent {{ color: {p['muted']}; font-family: {MONO}; font-size: 10px; letter-spacing: 2.5px; }}
 button.term-return {{ color: {p['text']}; background: transparent; border: 1px solid {p['text']}; border-radius: 9999px; padding: 7px 16px; font-family: {GROTESK}; font-size: 13px; font-weight: 500; }}
 button.term-return:hover {{ background: {p['surface2']}; }}
@@ -1519,8 +1521,9 @@ def run_gui(project_arg: str | None) -> int:
     from backend.app import content_engine as ce
     from backend.app.content_engine import (ContentEngine,
                                             default_content_dirs)
-    engine = ContentEngine(default_content_dirs(
-        DATA_DIR, RES_ROOT, sys.executable))
+    engine = ContentEngine(
+        default_content_dirs(DATA_DIR, RES_ROOT, sys.executable),
+        state_path=DATA_DIR / "content_state.json")
     core.dlog("content", f"{len(engine.packs)} content packs loaded"
               + (f"; pack errors: {'; '.join(engine.errors[:2])}"
                  if engine.errors else ""))
@@ -2377,7 +2380,6 @@ def run_gui(project_arg: str | None) -> int:
         S["game_progress"] = Gtk.Label(label="")
         S["game_progress"].get_style_context().add_class("content-sub")
         top_row.pack_start(S["game_kicker"], False, False, 0)
-        top_row.pack_end(S["game_progress"], False, False, 0)
         game_box.pack_start(top_row, False, False, 0)
         S["game_title"] = Gtk.Label(label="")
         S["game_title"].get_style_context().add_class("content-soon")
@@ -2422,6 +2424,20 @@ def run_gui(project_arg: str | None) -> int:
         S["game_next"].connect("clicked", lambda *_: serve_game(True))
         fb_row.pack_end(S["game_next"], False, False, 0)
         game_box.pack_start(fb_row, False, False, 8)
+        S["btn_gen"] = Gtk.Button(label="+")
+        S["btn_gen"].set_tooltip_text(
+            "Generate a game from code (coming soon)")
+        S["btn_gen"].get_style_context().add_class("feed-action")
+        S["btn_gen"].connect(
+            "clicked", lambda *_: game_placeholder("generate"))
+        S["btn_idea"] = Gtk.Button(label="\U0001F4A1")
+        S["btn_idea"].set_tooltip_text("Suggestions (coming soon)")
+        S["btn_idea"].get_style_context().add_class("feed-action")
+        S["btn_idea"].connect(
+            "clicked", lambda *_: game_placeholder("ideas"))
+        top_row.pack_end(S["btn_idea"], False, False, 0)
+        top_row.pack_end(S["btn_gen"], False, False, 4)
+        top_row.pack_end(S["game_progress"], False, False, 10)
         S["game_box"] = game_box
         content.pack_start(game_box, True, True, 0)
         empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
@@ -2471,9 +2487,9 @@ def run_gui(project_arg: str | None) -> int:
         btn_more.get_style_context().add_class("quiet")
         btn_more.connect("clicked", lambda *_: toggle_panel(True))
         atop.pack_end(btn_more, False, False, 8)
-        btn_return = Gtk.Button(label="\u2190 Terminal")
+        btn_return = Gtk.Button(label="Feed")
         btn_return.get_style_context().add_class("term-return")
-        btn_return.connect("clicked", lambda *_: show_terminal())
+        btn_return.connect("clicked", lambda *_: show_content())
         atop.pack_end(btn_return, False, False, 0)
         scene.pack_start(atop, False, False, 0)
 
@@ -2728,6 +2744,12 @@ def run_gui(project_arg: str | None) -> int:
         S["game_scene"].queue_draw()
         core.dlog("content", f"serving {game.get('id')}")
 
+    def game_placeholder(which: str):
+        msg = {"generate": "Game generation from code is coming soon.",
+               "ideas": "Suggestions are coming soon."}.get(which, "")
+        S["game_fb"].set_text(msg)
+        core.dlog("content", f"placeholder action: {which}")
+
     def game_answer(target):
         ctl = S["game_ctl"]
         game = ctl.get("game")
@@ -2947,10 +2969,10 @@ def run_gui(project_arg: str | None) -> int:
             return "terminal"
         if S.get("left_override"):
             return S["left_override"]
-        # Content earns the left pane only once the agent has been
-        # away for a while — short tasks never interrupt typing.
+        # Content earns the left pane once the agent has been
+        # away for 7 s — short tasks never interrupt typing.
         if S.get("_agent_busy") and S.get("_busy_since") \
-                and time.time() - S["_busy_since"] >= 10:
+                and time.time() - S["_busy_since"] >= 7:
             return "content"
         return "terminal"
 
@@ -2977,6 +2999,11 @@ def run_gui(project_arg: str | None) -> int:
 
     def show_terminal():
         S["left_override"] = "terminal"
+        apply_left()
+
+    def show_content():
+        """The Feed button: bring the companion content forward."""
+        S["left_override"] = "content"
         apply_left()
 
     def user_close():

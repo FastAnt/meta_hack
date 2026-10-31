@@ -173,19 +173,34 @@ def network_positions(layers, w: float, h: float):
 # ---------------------------------------------------------------------------
 
 class ContentEngine:
-    """A shuffled deck of packs with scoring and hot reload."""
+    """A shuffled deck of packs with scoring and hot reload.
 
-    def __init__(self, dirs, seed: int | None = None):
+    No pack is served twice until every pack has been served
+    once (a full cycle); the served set optionally persists to
+    `state_path` so the rule survives app restarts too."""
+
+    def __init__(self, dirs, seed: int | None = None,
+                 state_path=None):
         self.dirs = [Path(d) for d in dirs]
         self._rng = random.Random(seed)
         self.packs: list[dict] = []
         self.errors: list[str] = []
         self.deck: list[dict] = []
-        self._pos = 0
         self._current: dict | None = None
         self._signature: tuple | None = None
         self.score = {"answered": 0, "correct": 0, "streak": 0,
                       "best_streak": 0}
+        self.state_path = Path(state_path) if state_path else None
+        self._served: list[str] = []
+        self._last: str | None = None
+        if self.state_path:
+            try:
+                saved = json.loads(
+                    self.state_path.read_text(encoding="utf-8"))
+                self._served = list(saved.get("served") or [])
+                self._last = saved.get("last")
+            except Exception:
+                pass
         self.reload()
 
     def _dir_signature(self):
@@ -203,9 +218,9 @@ class ContentEngine:
         self.packs, self.errors = scan_packs(self.dirs)
         self.deck = list(self.packs)
         self._rng.shuffle(self.deck)
-        self._pos = 0
-        if self._current and self._current["id"] not in \
-                {p["id"] for p in self.packs}:
+        ids = {p["id"] for p in self.packs}
+        self._served = [i for i in self._served if i in ids]
+        if self._current and self._current["id"] not in ids:
             self._current = None
 
     def maybe_reload(self):
@@ -214,24 +229,42 @@ class ContentEngine:
             return True
         return False
 
+    def _save_state(self):
+        if not self.state_path:
+            return
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            self.state_path.write_text(json.dumps(
+                {"served": self._served, "last": self._last}),
+                encoding="utf-8")
+        except Exception:
+            pass
+
     def next_game(self) -> dict | None:
         self.maybe_reload()
-        if not self.deck:
+        if not self.packs:
             return None
-        if self._pos >= len(self.deck):
+        game = next((p for p in self.deck
+                     if p["id"] not in self._served), None)
+        if game is None:
+            # Full cycle done: start over, but never serve the
+            # same pack twice in a row across the boundary.
+            self._served = []
             self._rng.shuffle(self.deck)
-            self._pos = 0
-        self._current = self.deck[self._pos]
-        self._pos += 1
-        return self._current
+            if len(self.deck) > 1 and self.deck[0]["id"] == self._last:
+                self.deck.append(self.deck.pop(0))
+            game = self.deck[0]
+        self._served.append(game["id"])
+        self._last = game["id"]
+        self._current = game
+        self._save_state()
+        return game
 
     def current(self) -> dict | None:
         return self._current
 
     def progress(self) -> tuple[int, int]:
-        if not self.deck:
-            return (0, 0)
-        return (self._pos, len(self.deck))
+        return (len(self._served), len(self.packs))
 
     def answer(self, target_id: str) -> dict:
         """Score an answer to the current pack. Cards never score."""
@@ -263,12 +296,15 @@ def default_content_dirs(data_dir, res_root=None, executable=None):
     out.append(Path(data_dir) / "content")
     if executable:
         try:
-            out.append(Path(executable).resolve().parent / "content")
+            exe_dir = Path(executable).resolve().parent
+            out.append(exe_dir / "content")
+            out.append(exe_dir / "games-base")
         except Exception:
             pass
     out.append(Path.cwd() / "content")
     if res_root:
         out.append(Path(res_root) / "content")
+        out.append(Path(res_root) / "games-base")
     seen, uniq = set(), []
     for d in out:
         try:

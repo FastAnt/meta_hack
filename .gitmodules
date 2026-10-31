@@ -1,0 +1,3 @@
+[submodule "agent-aware-terminal/games-base"]
+	path = agent-aware-terminal/games-base
+	url = https://github.com/FastAnt/agent-aware-terminal-games.git

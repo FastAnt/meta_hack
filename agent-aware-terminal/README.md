@@ -326,5 +326,7 @@ or `$AAT_CONTENT_DIR`) and it joins the deck on the next game,
 no restart or rebuild. Pack kinds: `quiz` (scored: orbits /
 diagram / network scenes, choice rows, explanations, streaks)
 and `card` (news, refactoring suggestions — unscored). Three
-sample games live in `content/games/`; the schema and validation
-rules are documented at the top of the engine module.
+Base games live in the `games-base/` git submodule
+(separate repo: FastAnt/agent-aware-terminal-games — see its
+AGENTS.md for authoring); the schema and validation rules are
+documented at the top of the engine module.
