@@ -291,3 +291,17 @@ states (`backend/app/simulator.py`):
   sims/demo_run.jsonl` prints the state → mode timeline and exits
   non-zero if any `expect` mismatches. The same script is part of the
   unit-test suite (`backend/tests/test_simulator.py`).
+
+## Other agents (Codex, Claude Code, ...)
+
+Only Muse has a log adapter. Other agent CLIs found in the terminal
+(Codex, Claude Code) are understood in two layers:
+
+1. The observer knows the agent process tree: the agent is *busy* only
+   while it has child processes working; sitting at its own prompt is
+   idle (the square just floats).
+2. While the visualization is visible, System 1 (Liquid d1.1) reads
+   the actual terminal screen text every few seconds and classifies
+   what the agent is doing (thinking, installing, compiling, asking
+   a question, ...). The deterministic layer always wins where it
+   has facts; the screen judgment only fills the gaps.

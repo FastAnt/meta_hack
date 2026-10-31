@@ -394,11 +394,43 @@ class Core:
         return g
 
     # -- System-1 activity classification (ambiguous moments) -------------
-    def classify_tick(self, agent: dict):
+    def classify_tick(self, agent: dict, screen: str = ""):
         """When the event stream only says generic "working" (no tool),
         ask Liquid d1.1 what the agent is actually doing. Facts from the
         log always win; this only fills the ambiguous gaps, throttled
-        to one call per 6 s, result trusted for 9 s."""
+        to one call per 6 s, result trusted for 9 s.
+
+        Agents without a log adapter (Codex, Claude Code) are instead
+        understood from their terminal screen: System 1 reads the
+        console text (see LiquidClient.classify_screen)."""
+        if screen and agent.get("agent") \
+                and agent.get("source") != "agent_event":
+            if not self.liquid.configured or self._classifying:
+                return
+            now = time.time()
+            if now - getattr(self, "_screen_at", 0) < 4:
+                return
+            self._screen_at = now
+            self._classifying = True
+
+            def _ask_screen():
+                try:
+                    out = self.liquid.classify_screen(
+                        screen, agent.get("agent") or "agent")
+                    if out and out["confidence"] >= 0.45 and not (
+                            out["mode"] in ("shuffle", "question")
+                            and out["confidence"] < 0.6):
+                        self.mode_override = {
+                            "mode": out["mode"], "at": time.time(),
+                            "choice": out["choice"],
+                            "confidence": out["confidence"],
+                            "screen": True}
+                except Exception:
+                    pass
+                finally:
+                    self._classifying = False
+            threading.Thread(target=_ask_screen, daemon=True).start()
+            return
         if not self.liquid.configured or self._classifying:
             return
         if agent.get("state") not in BUSY:
@@ -518,8 +550,25 @@ class Core:
         fg_cmd = (snap.get("foreground") or {}).get("cmdline", "")
         cli = snap.get("agent_cli_detected")
         if cli:
+            # An interactive agent (Codex, ...) IS the foreground
+            # process even when it just sits at its prompt. It is
+            # only busy while it has child processes doing work.
+            apid = snap.get("agent_pid")
+            busy = inferred.get("state") in ("working", "tool_running")
+            if apid:
+                tree = snap.get("process_tree") or []
+                family = {apid}
+                changed = True
+                while changed:
+                    changed = False
+                    for pr in tree:
+                        if pr.get("ppid") in family \
+                                and pr.get("pid") not in family:
+                            family.add(pr.get("pid"))
+                            changed = True
+                busy = len(family) > 1
             self.agent_state = {
-                "agent": cli, "state": inferred.get("state", "working"),
+                "agent": cli, "state": "working" if busy else "idle",
                 "activity": (snap.get("foreground") or {}).get("cmdline", ""),
                 "command": fg_cmd,
                 "source": "heuristic",
@@ -2089,6 +2138,18 @@ def run_gui(project_arg: str | None) -> int:
     add_action("quit", lambda: app.quit())
 
     # ---------------- display state (mock for screenshots) ----------------
+    def screen_text():
+        term = S.get("term")
+        if term is None:
+            return ""
+        try:
+            out = term.get_text()
+            text = out[0] if isinstance(out, tuple) else (out or "")
+        except Exception:
+            return ""
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        return "\n".join(lines[-40:])
+
     def display_state():
         core.refresh_agent_state()
         agent = dict(core.agent_state)
@@ -2246,7 +2307,8 @@ def run_gui(project_arg: str | None) -> int:
             mode = mode_for_agent(agent)
             # System-1 fills the gaps: generic "working" with no tool
             # is ambiguous — d1.1 classifies the real activity.
-            core.classify_tick(agent)
+            scr = screen_text()
+            core.classify_tick(agent, scr)
             ov = core.mode_override
             ambiguous = not agent.get("tool") or agent.get("state") == "working"
             if ov and ambiguous and mode in ("build", "blinky") \
@@ -2266,6 +2328,10 @@ def run_gui(project_arg: str | None) -> int:
                                               "failed")
             S["mode_sub"].set_text(
                 short(pretty_activity(agent), 90) if busy else "")
+            if agent.get("source") == "heuristic" and scr:
+                # For adapter-less agents the console text is the
+                # most honest activity line we have.
+                S["mode_sub"].set_text(short(scr.splitlines()[-1], 90))
             S["mode_agent"].set_text(
                 (agent.get("agent") or "NO AGENT").upper())
             S["hint"].set_text(

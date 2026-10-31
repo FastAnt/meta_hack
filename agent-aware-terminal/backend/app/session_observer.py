@@ -127,9 +127,15 @@ class SessionObserver(threading.Thread):
             "command_duration_s": round(now - self._command_started, 1)
                 if self._command_started and command_running else None,
             "agent_cli_detected": agent_cli,
-            "process_tree": [{"pid": p["pid"], "process": p["comm"],
+            "process_tree": [{"pid": p["pid"], "ppid": p["ppid"],
+                              "process": p["comm"],
                               "cmdline": (p["cmdline"] or "")[:120]}
                              for p in tree[:25]],
+            "agent_pid": next((p["pid"] for p in tree
+                               if agent_cli and (
+                                   p["comm"] == agent_cli or
+                                   (p["cmdline"] or "").lower().startswith(
+                                       agent_cli + " "))), None),
             "inferred": {"state": inferred_state, "confidence": confidence,
                          "source": "heuristic"},
             "observed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

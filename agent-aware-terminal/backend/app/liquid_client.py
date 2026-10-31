@@ -20,6 +20,23 @@ import os
 
 API_URL = "https://api.liquid.ai/decisions/v1/systemone"
 
+SCREEN_MODES = {
+    "idle_at_prompt": "blinky",
+    "thinking": "flash",
+    "searching_system": "glitch",
+    "searching_web": "trail",
+    "writing_code": "build",
+    "installing": "install",
+    "downloading": "download",
+    "compiling": "compile",
+    "running_tests": "test",
+    "waiting_for_user": "shuffle",
+    "asking_question": "question",
+    "failed": "fail",
+    "finished": "done",
+}
+
+
 COMPLETION_CRITERIA = [
     "Nothing of the task was done, or the run failed",
     "Only a small part is done; the main deliverables are missing",
@@ -87,6 +104,65 @@ class LiquidClient:
         ans = answers.get("long_task") or {}
         val = ans.get("noul")
         return float(val) if val is not None else None
+
+
+
+    def classify_screen(self, screen: str, agent: str = "agent") -> dict | None:
+        """System-1 reads the terminal screen and says what the agent
+        is doing. This is how agents without a log adapter (Codex,
+        Claude Code, ...) are understood: from their console text.
+
+        Returns {"choice", "confidence", "mode"} or None."""
+        answers = self.decide(
+            f"Terminal screen of the {agent} coding agent "
+            f"(most recent lines at the bottom):\n\n{screen[-1800:]}", {
+                "screen_kind": {
+                    "type": "choice",
+                    "instructions": (
+                        "Judge ONLY from the visible terminal text what "
+                        "the agent is doing right now. If its input "
+                        "prompt or menu is shown and nothing runs, that "
+                        "is idle_at_prompt. A spinner or 'Working...' "
+                        "with no concrete tool output is thinking. "
+                        "Package downloads/installer output is "
+                        "downloading/installing. Compiler or linker "
+                        "output is compiling. Test runner output is "
+                        "running_tests. A direct question to the user "
+                        "at the end is asking_question."),
+                    "criteria": {
+                        "idle_at_prompt": "The agent's prompt/menu is "
+                                          "shown; nothing is running",
+                        "thinking": "Spinner/'Working' or reasoning "
+                                    "text, no concrete tool running",
+                        "searching_system": "Reading/searching local "
+                                            "files, listing code",
+                        "searching_web": "Web search or fetching pages",
+                        "writing_code": "Editing/creating files or "
+                                        "generic shell work",
+                        "installing": "Installing packages or updating "
+                                      "the tool/system (apt, pip "
+                                      "install, self-update install)",
+                        "downloading": "Downloading files or packages",
+                        "compiling": "Compiling or linking code",
+                        "running_tests": "Test runner output",
+                        "waiting_for_user": "Agent waits for approval "
+                                            "or a decision",
+                        "asking_question": "The agent asks the user a "
+                                           "direct question",
+                        "failed": "An error, failure or crash is shown",
+                        "finished": "The agent reports the task done",
+                    },
+                },
+            })
+        if not answers:
+            return None
+        ans = answers.get("screen_kind") or {}
+        choice = ans.get("choice")
+        if choice not in SCREEN_MODES:
+            return None
+        return {"choice": choice,
+                "confidence": float(ans.get("confidence") or 0.0),
+                "mode": SCREEN_MODES[choice]}
 
     def classify_activity(self, state: str) -> dict | None:
         """System-1 classification of what the agent is doing right now.

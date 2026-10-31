@@ -250,3 +250,20 @@ class FailureAndQuestionTests(unittest.TestCase):
                          "compile")
         self.assertEqual(m({"state": "tool_running", "tool": "bash",
                             "command": "g++ main.o -o boardreport"}), "link")
+
+
+class ScreenClassificationTests(unittest.TestCase):
+    def test_classify_screen_parses_choice(self):
+        import backend.app.liquid_client as lc
+        client = lc.LiquidClient.__new__(lc.LiquidClient)
+        client.decide = lambda state, q: {
+            "screen_kind": {"type": "choice", "choice": "installing",
+                            "confidence": 0.9}}
+        out = client.classify_screen("==> Installing standalone package",
+                                     "codex")
+        self.assertEqual(out["mode"], "install")
+        client.decide = lambda state, q: {
+            "screen_kind": {"type": "choice", "choice": "idle_at_prompt",
+                            "confidence": 0.8}}
+        self.assertEqual(client.classify_screen("menu>", "codex")["mode"],
+                         "blinky")
