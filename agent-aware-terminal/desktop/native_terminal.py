@@ -304,15 +304,7 @@ class Core:
                 and self._baseline is None:
             # a new task begins: remember the project's files so the
             # end-of-session diff only shows this session's changes
-            root = self.project_path
-            self._baseline = {}
-
-            def _snap():
-                try:
-                    self._baseline = snapshot_files(root)
-                except Exception:
-                    self._baseline = {}
-            threading.Thread(target=_snap, daemon=True).start()
+            self._start_baseline()
         if state in ("working", "tool_running"):
             self.step_count += 1
         if state in ("completed", "failed") and self._last_state in \
@@ -342,6 +334,81 @@ class Core:
                     self.working_since = time.time()
             elif ev.get("state") in ("completed", "failed", "awaiting_user"):
                 self.working_since = self.working_since  # keep for stats
+
+    def _start_baseline(self):
+        if self._baseline is not None:
+            return
+        self._baseline = {}
+        root = self.project_path
+
+        def _snap():
+            try:
+                self._baseline = snapshot_files(root)
+            except Exception:
+                self._baseline = {}
+        threading.Thread(target=_snap, daemon=True).start()
+
+    def _finish_observed_turn(self, agent: str, final: str, secs: int):
+        """End-of-turn results for adapter-less agents (Codex, ...):
+        measured files + a System-1 verdict over the console tail."""
+        if self._baseline is not None:
+            files = session_diff(self.project_path, self._baseline)
+            self._baseline = None
+        else:
+            files = git_changes_scoped(self.project_path) or []
+        self.results = {"files": files, "completion": None,
+                        "safety": None, "source": "pending",
+                        "final_state": final, "observed": True}
+        results_ref = self.results
+        excerpt = (getattr(self, "_screen_tail", "") or "")[-1200:]
+
+        def _score():
+            state_text = (
+                f"Task handled by the {agent} coding agent, observed "
+                f"from its terminal. Final state: {final}. Turn "
+                f"length: {secs}s.\nConsole excerpt (end of "
+                f"turn):\n{excerpt or '(unavailable)'}\n"
+                f"Files changed during this turn (measured): "
+                f"{len(files)}: "
+                + ", ".join(f["file"] for f in files[:14]))
+            self._apply_evaluation(results_ref, state_text, final,
+                                   files, label=f"observed {agent}")
+        threading.Thread(target=_score, daemon=True).start()
+        self.dlog("score", f"observed turn finished ({agent}, "
+                           f"{final}, {secs}s) — scoring")
+
+    def _apply_evaluation(self, results_ref, state_text, final_state,
+                          files, plan_ratio=None, label="session"):
+        try:
+            ev = self.liquid.evaluate_session(state_text) \
+                if self.liquid.configured else None
+        except Exception:
+            ev = None
+        if ev:
+            results_ref["completion"] = ev["completion"]
+            results_ref["safety"] = ev["safety"]
+            results_ref["source"] = f"liquid {self.liquid.model}"
+        else:
+            ratio = plan_ratio if plan_ratio is not None else (
+                0.75 if final_state == "completed" else 0.0)
+            comp = round(4 * ratio)
+            adds = sum(f["add"] for f in files)
+            dels = sum(f["del"] for f in files)
+            del_ratio = dels / max(adds + dels, 1)
+            safe = 4 - (1 if len(files) > 8 else 0) \
+                - (1 if del_ratio > 0.4 else 0) \
+                - (1 if final_state == "failed" else 0)
+            results_ref["completion"] = {
+                "score": float(comp), "confidence": 0.0}
+            results_ref["safety"] = {
+                "score": float(max(0, min(4, safe))), "confidence": 0.0}
+            results_ref["source"] = "heuristic (no LIQUID_API_KEY)"
+        self.dlog(
+            "score",
+            f"to System-1 ({label}): files={len(files)} -> "
+            f"completion={results_ref['completion']['score']}/4, "
+            f"safety={results_ref['safety']['score']}/4 "
+            f"[{results_ref['source']}]")
 
     # -- System-1 overlay gate -------------------------------------------
     def _gate_state_text(self, elapsed: float) -> str:
@@ -506,6 +573,8 @@ class Core:
                 self.dlog("system1", "screen text unavailable: "
                                      "classifier idle")
             return
+        if screen:
+            self._screen_tail = screen[-1500:]
         if screen and agent.get("agent") \
                 and agent.get("source") != "agent_event":
             if not self.liquid.configured:
@@ -778,6 +847,8 @@ class Core:
             if sig[1] in busy_states:
                 if self._busy_started_at is None:
                     self._busy_started_at = time.time()
+                if not prev or prev[1] not in busy_states:
+                    self._start_baseline()
                 if self._last_outcome:
                     self._last_outcome = None
                     self.dlog("mode", "outcome cleared (new turn)")
@@ -792,7 +863,13 @@ class Core:
                                       "agent": sig[0], "mode": "done"}
                 self.dlog("mode", f"turn ended -> sticky done "
                                   f"({sig[0]})")
+                self._finish_observed_turn(
+                    sig[0], "completed",
+                    int(time.time() - self._busy_started_at))
             if sig[1] not in busy_states:
+                if self._busy_started_at:
+                    self._last_turn_secs = int(
+                        time.time() - self._busy_started_at)
                 self._busy_started_at = None
         # Agent vanished mid-turn (process exited while busy and
         # never reported an ending): a brief interrupted window
@@ -824,12 +901,28 @@ class Core:
                 self._vanish = None
                 self.dlog("mode", "vanished agent failed -> sticky "
                                   f"fail ({vanish['agent']})")
+                self._finish_observed_turn(
+                    vanish["agent"], "failed",
+                    getattr(self, "_last_turn_secs", 0))
+            elif age > 3 and last == "finished":
+                self._last_outcome = {
+                    "key": vanish.get("key"),
+                    "agent": vanish["agent"], "mode": "done"}
+                self._vanish = None
+                self.dlog("mode", "vanished agent finished -> sticky "
+                                  f"done ({vanish['agent']})")
+                self._finish_observed_turn(
+                    vanish["agent"], "completed",
+                    getattr(self, "_last_turn_secs", 0))
             elif age > 6 and last == "idle_at_prompt":
                 self._interrupt_until = time.time() + 5
                 self._interrupt_agent = vanish["agent"]
                 self._vanish = None
                 self.dlog("mode", "agent vanished mid-turn -> "
                                   f"interrupted ({vanish['agent']})")
+                self._finish_observed_turn(
+                    vanish["agent"], "interrupted",
+                    getattr(self, "_last_turn_secs", 0))
             elif age > 14:
                 self._interrupt_until = time.time() + 5
                 self._interrupt_agent = vanish["agent"]
@@ -837,6 +930,9 @@ class Core:
                 self.dlog("mode", "agent vanished mid-turn -> "
                                   "interrupted "
                                   f"({vanish['agent']}, unresolved)")
+                self._finish_observed_turn(
+                    vanish["agent"], "interrupted",
+                    getattr(self, "_last_turn_secs", 0))
 
         if not cur_agent and time.time() < getattr(
                 self, "_interrupt_until", 0):
@@ -2428,7 +2524,7 @@ def run_gui(project_arg: str | None) -> int:
     # ---------------- actions ----------------
     def draw_mode_btn(area, cr):
         w, h = area.get_allocated_width(), area.get_allocated_height()
-        s = max(min(w, h) - 12, 8)
+        s = max(min(w, h) - 8, 10)
         x, y = (w - s) / 2, (h - s) / 2
         mode = S.get("_square_mode", "blinky")
 
@@ -2448,8 +2544,8 @@ def run_gui(project_arg: str | None) -> int:
             cr.stroke()
         if not S["overlay_on"]:
             rr(x, y, s, 3)
-            cr.set_source_rgba(*PAL["muted"], 0.65)
-            cr.set_line_width(1.4)
+            cr.set_source_rgba(*PAL["square"], 0.95)
+            cr.set_line_width(1.7)
             cr.stroke()
             return False
         if mode == "blinky":
@@ -2902,7 +2998,11 @@ def run_gui(project_arg: str | None) -> int:
 
             # end-of-session results: three squares under the main one
             res = core.results
-            show_res = state in ("completed", "failed") and res is not None
+            show_res = res is not None and (
+                state in ("completed", "failed")
+                or agent.get("turn_done")
+                or agent.get("sticky_outcome")
+                or agent.get("interrupted"))
             S["res_row"].set_visible(bool(show_res))
             if show_res:
                 files = res["files"]

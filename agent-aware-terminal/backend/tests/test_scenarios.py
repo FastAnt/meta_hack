@@ -474,3 +474,27 @@ class VanishResolutionTests(CoreScenarioTests):
         self.core._vanish["at"] = time.time() - 20
         self.core.refresh_agent_state()
         self.assertTrue(self.core.agent_state.get("interrupted"))
+
+    def test_observed_turn_gets_session_results(self):
+        import pathlib as _pl
+        codex = {"pid": 10, "ppid": 1, "comm": "codex",
+                 "cmdline": "codex --yolo"}
+        child = {"pid": 11, "ppid": 10, "comm": "rg",
+                 "cmdline": "rg --files"}
+        self.core.snapshot = self._snap([codex, child], 10)
+        self.core.refresh_agent_state()
+        time.sleep(0.4)  # baseline snapshot lands
+        _pl.Path(self._tmp, "created_by_agent.py").write_text("x = 1\n")
+        self.core._busy_started_at = time.time() - 12
+        self.core.snapshot = self._snap([codex], 10)
+        self.core.refresh_agent_state()
+        self.assertIsNotNone(self.core.results)
+        self.assertTrue(self.core.results.get("observed"))
+        names = [f["file"] for f in self.core.results["files"]]
+        self.assertIn("created_by_agent.py", names)
+        for _ in range(50):
+            if self.core.results.get("source") not in (None, "pending"):
+                break
+            time.sleep(0.1)
+        self.assertEqual(self.core.results["source"],
+                         "heuristic (no LIQUID_API_KEY)")
