@@ -257,6 +257,13 @@ model's screen/activity verdicts are *flavor*: they pick the
 animation inside an open turn and may flip freely — they can
 never open or close a turn, arm DONE, or move the panes, and
 they are not consulted at all when no known agent is present.
+For interactive agents, "busy" is the process family's
+measured CPU burn — a permanent idle child (Codex's code-mode
+host) is not work. Turns the polls never saw open are still
+closed deterministically: the agent's own completion receipt
+("Worked for 36s") appearing after a resting snapshot, or the
+idle -> changed -> finished screen cycle; such unseen turns
+report files as unmeasured, never invented.
 Perception is change-driven: while the terminal keeps
 changing, a screenshot call fires every 4 s (no skipped
 steps); when it stops, exactly one trailing call follows
