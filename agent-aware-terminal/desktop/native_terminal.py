@@ -535,36 +535,26 @@ class Core:
     # before a screen-driven turn counts as ended.
     TURN_END_CONFIRM_S = float(
         os.environ.get("AAT_TURN_END_CONFIRM_S", "4"))
-    # Perception schedule: a screenshot/classify call fires only
-    # after the screen changed and settled this long; a screen
-    # that keeps changing stretches at most MAX_WAIT; exactly
-    # one trailing call follows each fired call.
+    # Perception schedule: while the screen keeps changing,
+    # a screenshot call fires every CLASSIFY_DEBOUNCE_S (steps
+    # are never skipped); when it stops changing, exactly one
+    # trailing call follows 4 s later, then silence — an idle
+    # terminal costs zero calls.
     CLASSIFY_DEBOUNCE_S = 4.0
-    CLASSIFY_MAX_WAIT_S = 14.0
 
     def _classify_due(self, now: float, screen: str) -> bool:
-        """Event-driven perception schedule. Static screens
-        cost zero calls — calls exist because the terminal
-        changed, not because a timer elapsed."""
-        h = hash((screen or "")[-1500:])
-        if h != getattr(self, "_cls_hash", None):
-            self._cls_hash = h
-            if not getattr(self, "_cls_dirty", False):
-                self._cls_pending_since = now
-            self._cls_dirty = True
-            self._cls_changed_at = now
-        if getattr(self, "_cls_dirty", False):
-            if now - self._cls_changed_at \
-                    >= self.CLASSIFY_DEBOUNCE_S or \
-                    now - getattr(self, "_cls_pending_since", now) \
-                    >= self.CLASSIFY_MAX_WAIT_S:
-                self._cls_dirty = False
-                self._cls_trail = True
-                return True
+        """Cadence while active, silence while idle."""
+        if now - getattr(self, "_screen_at", 0) \
+                < self.CLASSIFY_DEBOUNCE_S:
             return False
-        if getattr(self, "_cls_trail", False) and \
-                now - getattr(self, "_screen_at", 0) \
-                >= self.CLASSIFY_DEBOUNCE_S:
+        h = hash((screen or "")[-1500:])
+        if h != getattr(self, "_cls_call_hash", None):
+            # The screen moved since the last call (or this is
+            # the first look): fire, and owe one trailing call.
+            self._cls_call_hash = h
+            self._cls_trail = True
+            return True
+        if getattr(self, "_cls_trail", False):
             self._cls_trail = False
             return True
         return False
