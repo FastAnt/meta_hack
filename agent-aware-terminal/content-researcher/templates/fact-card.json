@@ -1,0 +1,9 @@
+{
+  "id": "domain-fact-slug-001",
+  "kind": "card",
+  "kicker": "PROJECT FACT",
+  "topic": "Replace with the detected domain label",
+  "title": "One surprising true statement, <= 60 chars",
+  "body": "Two to four sentences. The fact, plus why it is true or why it matters for this project.",
+  "source_hint": "Where a reviewer can verify this (doc, standard, paper, or project file)"
+}

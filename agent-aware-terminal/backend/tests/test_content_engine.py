@@ -14,13 +14,15 @@ GAMES_DIR = ROOT / "games-base"
 
 
 class ShippedPacksTests(unittest.TestCase):
-    def test_three_test_games_load_clean(self):
+    def test_base_games_load_clean(self):
+        # The catalogue grows (agent-authored games land here);
+        # the three originals must always load, with no errors.
         packs, errors = ce.scan_packs([GAMES_DIR])
         self.assertEqual(errors, [])
-        self.assertEqual(len(packs), 3)
-        self.assertEqual({p["id"] for p in packs},
-                         {"physics-orbits-001", "architecture-mvc-001",
-                          "ml-gradient-001"})
+        ids = {p["id"] for p in packs}
+        self.assertTrue({"physics-orbits-001", "architecture-mvc-001",
+                         "ml-gradient-001"} <= ids)
+        self.assertGreaterEqual(len(packs), 3)
 
     def test_each_game_is_answerable(self):
         packs, _ = ce.scan_packs([GAMES_DIR])
@@ -78,9 +80,25 @@ class ValidationTests(unittest.TestCase):
             self.assertTrue(any("duplicate" in e for e in errors))
 
 
+def _tiny_deck(tmp):
+    import json as _json
+    for i in range(3):
+        pathlib.Path(tmp, f"deck-game-{i}.json").write_text(_json.dumps({
+            "id": f"deck-game-{i}", "kind": "quiz",
+            "title": f"Deck {i}", "question": "?",
+            "choices": [{"id": "a", "label": "A"},
+                        {"id": "b", "label": "B"}],
+            "answer": "a", "explanation": "because"}))
+
+
 class EngineFlowTests(unittest.TestCase):
     def setUp(self):
-        self.engine = ce.ContentEngine([GAMES_DIR], seed=7)
+        self._tmp = tempfile.TemporaryDirectory()
+        _tiny_deck(self._tmp.name)
+        self.engine = ce.ContentEngine([self._tmp.name], seed=7)
+
+    def tearDown(self):
+        self._tmp.cleanup()
 
     def test_answer_scoring_and_streak(self):
         game = self.engine.next_game()
@@ -149,21 +167,26 @@ if __name__ == "__main__":
 
 class NoRepeatCycleTests(unittest.TestCase):
     def test_full_cycle_without_repeats_then_resets(self):
-        engine = ce.ContentEngine([GAMES_DIR], seed=3)
-        seen = [engine.next_game()["id"] for _ in range(3)]
-        self.assertEqual(len(set(seen)), 3)
-        fourth = engine.next_game()["id"]
-        self.assertEqual(engine.progress(), (1, 3))
-        self.assertNotEqual(fourth, seen[-1])
+        with tempfile.TemporaryDirectory() as tmp:
+            _tiny_deck(tmp)
+            engine = ce.ContentEngine([tmp], seed=3)
+            seen = [engine.next_game()["id"] for _ in range(3)]
+            self.assertEqual(len(set(seen)), 3)
+            fourth = engine.next_game()["id"]
+            self.assertEqual(engine.progress(), (1, 3))
+            self.assertNotEqual(fourth, seen[-1])
 
     def test_cycle_survives_restart_via_state_file(self):
         with tempfile.TemporaryDirectory() as tmp:
+            deck = pathlib.Path(tmp, "deck")
+            deck.mkdir()
+            _tiny_deck(str(deck))
             state = pathlib.Path(tmp, "state.json")
-            first = ce.ContentEngine([GAMES_DIR], seed=5,
+            first = ce.ContentEngine([deck], seed=5,
                                      state_path=state)
             served = {first.next_game()["id"],
                       first.next_game()["id"]}
-            second = ce.ContentEngine([GAMES_DIR], seed=5,
+            second = ce.ContentEngine([deck], seed=5,
                                       state_path=state)
             nxt = second.next_game()["id"]
             self.assertNotIn(nxt, served)  # still the unseen one

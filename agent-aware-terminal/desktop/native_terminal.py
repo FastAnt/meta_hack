@@ -1521,9 +1521,13 @@ def run_gui(project_arg: str | None) -> int:
     from backend.app import content_engine as ce
     from backend.app.content_engine import (ContentEngine,
                                             default_content_dirs)
+    _content_dirs = default_content_dirs(DATA_DIR, RES_ROOT,
+                                         sys.executable)
+    # Project-correlated content from the Content Researcher
+    # agent lives in <project>/.aat/content and wins first.
+    _content_dirs.insert(0, Path(project_path) / ".aat" / "content")
     engine = ContentEngine(
-        default_content_dirs(DATA_DIR, RES_ROOT, sys.executable),
-        state_path=DATA_DIR / "content_state.json")
+        _content_dirs, state_path=DATA_DIR / "content_state.json")
     core.dlog("content", f"{len(engine.packs)} content packs loaded"
               + (f"; pack errors: {'; '.join(engine.errors[:2])}"
                  if engine.errors else ""))
