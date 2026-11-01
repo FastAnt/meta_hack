@@ -27,7 +27,9 @@ import time
 from pathlib import Path
 
 from . import content_engine as ce
-from .embeddings import centroid, cosine, pack_text, text_hash
+from .embeddings import (centroid, cosine, doc_text, pack_text,
+                         text_hash)
+from . import embeddings as _emb
 
 GENERATION_COOLDOWN_S = 1800
 PROJECT_FIT = 0.35
@@ -61,7 +63,7 @@ class ContentSelector:
                 self.project_ids = set()
             todo = []
             for pack in self.engine.packs:
-                text = pack_text(pack)
+                text = doc_text(pack)
                 meta = self.store.item_meta(pack["id"])
                 if meta and meta[0] == text_hash(text) \
                         and meta[1] == self.embedder.model_id:
@@ -72,8 +74,15 @@ class ContentSelector:
                 return
             try:
                 vectors = self.embedder.embed(
-                    [t for _, t in todo])
+                    [t for _, t in todo], kind="doc")
             except Exception as exc:
+                if not isinstance(self.embedder,
+                                  _emb.HashingEmbedder):
+                    self.dlog("content",
+                              "embedding model unavailable, "
+                              "falling back to hashing vectors")
+                    self.embedder = _emb.HashingEmbedder()
+                    return self.index()
                 self.dlog("content",
                           f"embedding failed: {exc}"[:120])
                 return
@@ -84,6 +93,7 @@ class ContentSelector:
                     pack, src, self.embedder.model_id, vec,
                     text_hash(text))
             self.indexed = len(self.engine.packs)
+            self.store.purge_other_models(self.embedder.model_id)
             self.dlog("content", f"vector index ready: "
                                  f"{self.indexed} items "
                                  f"({self.embedder.model_id})")
@@ -94,7 +104,8 @@ class ContentSelector:
             self.embedder.model_id))
         if not vectors:
             return []
-        query = self.embedder.embed([context_text])[0]
+        query = self.embedder.embed([context_text],
+                                    kind="query")[0]
         liked = centroid([vectors[i] for i in
                           self.store.reaction_ids(project_key, "like")
                           if i in vectors])

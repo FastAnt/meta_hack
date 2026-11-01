@@ -317,7 +317,7 @@ Only Muse has a log adapter. Other agent CLIs found in the terminal
 ## Companion content (games while the agent works)
 
 Selection is contextual, not random: a local vector index
-(MiniLM ONNX embeddings in SQLite; hashed-vector fallback)
+(EmbeddingGemma-2 quantized ONNX embeddings in SQLite; hashed-vector fallback)
 retrieves the closest not-yet-shown items for the current
 project + task — project content from `.aat/content` first —
 and System-1 picks the best of the top 10. ♥/✕ reactions bend

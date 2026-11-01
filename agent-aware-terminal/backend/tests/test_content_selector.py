@@ -27,7 +27,7 @@ class FakeEmbedder:
         "prime": [0.14, 0.99],
     }
 
-    def embed(self, texts):
+    def embed(self, texts, kind="doc"):
         out = []
         for text in texts:
             vec = [0.0, 0.0]
@@ -161,24 +161,26 @@ class HashingEmbedderTests(unittest.TestCase):
                              ["x1"])
 
 
-@unittest.skipUnless(pathlib.Path.home().joinpath(
-    ".local/share/agent-aware-terminal/models").exists()
-    or True, "runs a quick real check when possible")
-class OnnxSmokeTests(unittest.TestCase):
-    def test_minilm_semantics(self):
+class GemmaSmokeTests(unittest.TestCase):
+    def test_gemma_semantics(self):
         try:
             import onnxruntime  # noqa: F401
+            import tokenizers  # noqa: F401
         except Exception:
-            self.skipTest("onnxruntime not installed")
-        embedder = emb.OnnxEmbedder(
-            pathlib.Path(tempfile.mkdtemp()) / "minilm")
+            self.skipTest("onnxruntime/tokenizers not installed")
+        embedder = emb.GemmaEmbedder(pathlib.Path.home() / (
+            ".local/share/agent-aware-terminal/models/"
+            "embeddinggemma2"))
         if not embedder.ensure_ready():
             self.skipTest("model unavailable (offline?)")
         a, b, c = embedder.embed([
             "audio codec sampling and spectrograms",
             "how mp3 compression removes masked frequencies",
-            "medieval poetry and manuscript history"])
+            "medieval poetry and manuscript history"], kind="doc")
+        q = embedder.embed(["audio codec"], kind="query")[0]
+        self.assertEqual(len(a), 256)
         self.assertGreater(emb.cosine(a, b), emb.cosine(a, c))
+        self.assertGreater(emb.cosine(q, a), emb.cosine(q, c))
 
 
 if __name__ == "__main__":

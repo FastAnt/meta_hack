@@ -1,18 +1,21 @@
 """Local text embeddings for content retrieval.
 
-Two backends behind one interface:
+Primary backend: Google EmbeddingGemma-2 (Apache 2.0,
+ungated) via the int8-quantized ONNX export from
+onnx-community — downloaded once into the data dir. Mean
+pooling, Matryoshka truncation to 256 dims, retrieval
+prompts (`task: search result | query:` for queries,
+`title: … | text:` for documents) exactly as the model was
+trained. Runs fully locally on CPU.
 
-- `OnnxEmbedder` — all-MiniLM-L6-v2 (int8 ONNX, ~23 MB,
-  downloaded once into the data dir) with a pure-Python
-  WordPiece tokenizer. Real semantic vectors, fully local.
-  Other local models (e.g. Google's EmbeddingGemma) can slot
-  into the same interface later.
-- `HashingEmbedder` — hashed word/char n-gram TF vectors.
-  Zero dependencies, always available; a lexical baseline that
-  is honestly weaker on paraphrases.
+Fallback: `HashingEmbedder` — hashed word/char n-gram TF
+vectors, zero dependencies, always available; a lexical
+baseline that is honestly weaker on paraphrases. If the
+ONNX model cannot be fetched or loaded, the selector swaps
+to the fallback instead of breaking.
 
-Vectors from different backends are never mixed: every stored
-vector carries its model id and ranking only compares
+Vectors from different backends are never mixed: every
+stored vector carries its model id and ranking only compares
 same-model vectors.
 """
 from __future__ import annotations
@@ -25,10 +28,15 @@ import threading
 import urllib.request
 from pathlib import Path
 
-MODEL_MINILM = "minilm-l6-onnx"
+MODEL_GEMMA = "embeddinggemma2-q8-256"
 MODEL_HASHING = "hashing-384"
+OUTPUT_DIM = 256
 
-_HF = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main"
+_REPO = "https://huggingface.co/onnx-community/embeddinggemma-2-ONNX/resolve/main"
+_FILES = ("onnx/model_quantized.onnx",
+          "onnx/model_quantized.onnx_data",
+          "tokenizer.json")
+QUERY_PREFIX = "task: search result | query: "
 
 
 def pack_text(pack: dict) -> str:
@@ -38,6 +46,12 @@ def pack_text(pack: dict) -> str:
              pack.get("explanation", "")]
     parts += [c.get("label", "") for c in pack.get("choices") or []]
     return " ".join(p for p in parts if p).strip()
+
+
+def doc_text(pack: dict) -> str:
+    """The document format EmbeddingGemma was trained with."""
+    return f"title: {pack.get('title', '') or 'none'} | text: " \
+           f"{pack_text(pack)}"
 
 
 def text_hash(text: str) -> str:
@@ -87,7 +101,7 @@ class HashingEmbedder:
     def ready(self) -> bool:
         return True
 
-    def embed(self, texts):
+    def embed(self, texts, kind="doc"):
         return [self._one(t) for t in texts]
 
     def _one(self, text: str):
@@ -105,75 +119,27 @@ class HashingEmbedder:
 
 
 # ------------------------------------------------------------------
-# ONNX MiniLM
+# EmbeddingGemma-2 (quantized ONNX)
 # ------------------------------------------------------------------
 
-_WORD = re.compile(r"[a-z0-9]+|[^\sa-z0-9]")
-
-
-class _WordPiece:
-    def __init__(self, vocab_path: Path):
-        self.vocab = {}
-        for i, tok in enumerate(
-                vocab_path.read_text(encoding="utf-8").splitlines()):
-            self.vocab[tok] = i
-        self.unk = self.vocab.get("[UNK]", 100)
-
-    def encode(self, text: str, max_len: int = 128):
-        ids = [self.vocab.get("[CLS]", 101)]
-        for word in _WORD.findall(text.lower()):
-            if word in self.vocab:
-                ids.append(self.vocab[word])
-                continue
-            pieces, rest, ok = [], word, True
-            while rest:
-                hit = None
-                for end in range(len(rest), 0, -1):
-                    piece = rest[:end] if len(pieces) == 0 \
-                        else "##" + rest[:end]
-                    if piece in self.vocab:
-                        hit = (piece, end)
-                        break
-                if hit is None:
-                    ok = False
-                    break
-                pieces.append(self.vocab[hit[0]])
-                rest = rest[hit[1]:]
-            ids.extend(pieces if ok else [self.unk])
-        ids.append(self.vocab.get("[SEP]", 102))
-        return ids[:max_len]
-
-
-class OnnxEmbedder:
-    model_id = MODEL_MINILM
-    dim = 384
+class GemmaEmbedder:
+    model_id = MODEL_GEMMA
+    dim = OUTPUT_DIM
 
     def __init__(self, model_dir: Path):
         self.dir = Path(model_dir)
         self._session = None
         self._tok = None
+        self._inputs: set[str] = set()
         self._lock = threading.Lock()
         self._failed = False
 
-    def _files(self):
-        import platform
-        names = ["model_qint8_arm64.onnx" if "arm" in
-                 platform.machine().lower() else "model_quint8_avx2.onnx",
-                 "model.onnx"]
-        for n in names:
-            if (self.dir / n).exists():
-                return self.dir / n
-        return self.dir / names[0]
-
     def _download(self):
         self.dir.mkdir(parents=True, exist_ok=True)
-        model = self._files()
-        if not model.exists():
-            urllib.request.urlretrieve(
-                f"{_HF}/onnx/{model.name}", model)
-        vocab = self.dir / "vocab.txt"
-        if not vocab.exists():
-            urllib.request.urlretrieve(f"{_HF}/vocab.txt", vocab)
+        for name in _FILES:
+            target = self.dir / Path(name).name
+            if not target.exists():
+                urllib.request.urlretrieve(f"{_REPO}/{name}", target)
 
     def ensure_ready(self) -> bool:
         if self._session is not None:
@@ -185,11 +151,15 @@ class OnnxEmbedder:
                 return True
             try:
                 import onnxruntime as ort
+                from tokenizers import Tokenizer
                 self._download()
-                self._tok = _WordPiece(self.dir / "vocab.txt")
+                self._tok = Tokenizer.from_file(
+                    str(self.dir / "tokenizer.json"))
                 self._session = ort.InferenceSession(
-                    str(self._files()),
+                    str(self.dir / "model_quantized.onnx"),
                     providers=["CPUExecutionProvider"])
+                self._inputs = {i.name for i in
+                                self._session.get_inputs()}
                 return True
             except Exception:
                 self._failed = True
@@ -198,37 +168,68 @@ class OnnxEmbedder:
     def ready(self) -> bool:
         return self._session is not None
 
-    def embed(self, texts):
+    def embed(self, texts, kind="doc"):
         import numpy as np
         if not self.ensure_ready():
-            raise RuntimeError("onnx embedder unavailable")
+            raise RuntimeError("gemma embedder unavailable")
+        if kind == "query":
+            texts = [QUERY_PREFIX + t for t in texts]
         out = []
-        for text in texts:
-            ids = self._tok.encode(text)
-            mask = [1] * len(ids)
-            inputs = {
-                "input_ids": np.array([ids], dtype=np.int64),
-                "attention_mask": np.array([mask], dtype=np.int64),
-                "token_type_ids": np.zeros((1, len(ids)), dtype=np.int64),
-            }
-            hidden = self._session.run(None, inputs)[0][0]
-            vec = [0.0] * self.dim
-            for row, m in zip(hidden, mask):
-                if m:
-                    for i, x in enumerate(row):
-                        vec[i] += float(x)
-            vec = [x / max(sum(mask), 1) for x in vec]
-            norm = math.sqrt(sum(x * x for x in vec))
-            out.append([x / norm for x in vec] if norm else vec)
+        for i in range(0, len(texts), 32):
+            batch = list(texts[i:i + 32])
+            encs = self._tok.encode_batch(batch)
+            width = max(len(e.ids) for e in encs)
+            ids = np.zeros((len(encs), width), dtype=np.int64)
+            mask = np.zeros((len(encs), width), dtype=np.int64)
+            for row, e in enumerate(encs):
+                ids[row, :len(e.ids)] = e.ids[:512]
+                mask[row, :len(e.ids)] = 1
+            feed = {}
+            if "input_ids" in self._inputs:
+                feed["input_ids"] = ids
+            if "attention_mask" in self._inputs:
+                feed["attention_mask"] = mask
+            if "token_type_ids" in self._inputs:
+                feed["token_type_ids"] = np.zeros_like(ids)
+            # Multimodal export: absent modalities are fed as
+            # empty feature tensors.
+            for opt in ("image_features", "video_features",
+                        "audio_features"):
+                if opt in self._inputs:
+                    feed[opt] = np.zeros((0, 512), dtype=np.float32)
+            names = [o.name for o in self._session.get_outputs()]
+            results = self._session.run(None, feed)
+            if "sentence_embedding" in names:
+                pooled = results[names.index("sentence_embedding")]
+                for row in range(len(encs)):
+                    vec = [float(x) for x in
+                           pooled[row][:OUTPUT_DIM]]
+                    norm = math.sqrt(sum(x * x for x in vec))
+                    out.append([x / norm for x in vec]
+                               if norm else vec)
+                continue
+            hidden = results[0]
+            for row in range(len(encs)):
+                m = mask[row]
+                total = max(int(m.sum()), 1)
+                vec = [0.0] * OUTPUT_DIM
+                for t in range(width):
+                    if m[t]:
+                        for j in range(OUTPUT_DIM):
+                            vec[j] += float(hidden[row, t, j])
+                vec = [x / total for x in vec]
+                norm = math.sqrt(sum(x * x for x in vec))
+                out.append([x / norm for x in vec] if norm else vec)
         return out
 
 
 def make_embedder(data_dir: Path):
-    """ONNX when the runtime is importable, else the hashing
-    baseline. ONNX initialisation (download + load) happens
-    lazily on first embed, in the caller's thread."""
+    """EmbeddingGemma-2 when its runtime is importable, else
+    the hashing baseline. Model download/load is lazy."""
     try:
         import onnxruntime  # noqa: F401
-        return OnnxEmbedder(Path(data_dir) / "models" / "minilm-l6")
+        import tokenizers  # noqa: F401
+        return GemmaEmbedder(
+            Path(data_dir) / "models" / "embeddinggemma2")
     except Exception:
         return HashingEmbedder()

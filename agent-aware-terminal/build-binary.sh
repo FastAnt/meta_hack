@@ -13,7 +13,7 @@ if [ ! -d .venv-build ]; then
 fi
 # Local embedding runtime (optional at runtime: hashing fallback
 # covers its absence, but the binary should carry it).
-.venv-build/bin/pip install -q onnxruntime numpy 2>/dev/null || true
+.venv-build/bin/pip install -q onnxruntime numpy tokenizers 2>/dev/null || true
 .venv-build/bin/pyinstaller --noconfirm --onedir \
   --name agent-aware-terminal --paths . \
   --add-data "demo_project:demo_project" \
@@ -34,6 +34,8 @@ fi
   --hidden-import backend.app.vector_store \
   --hidden-import backend.app.content_selector \
   --collect-all onnxruntime \
+  --hidden-import tokenizers \
+  --collect-all tokenizers \
   --collect-all gi desktop/native_terminal.py
 rm -rf dist/agent-aware-terminal/content dist/agent-aware-terminal/games-base
 cp -r games-base dist/agent-aware-terminal/games-base

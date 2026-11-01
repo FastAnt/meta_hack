@@ -75,6 +75,12 @@ class VectorStore:
                 (model,)).fetchall()
         return [(r[0], unpack_vector(r[1])) for r in rows]
 
+    def purge_other_models(self, model):
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM items WHERE model != ?", (model,))
+            self._conn.commit()
+
     def get_vector(self, item_id):
         with self._lock:
             row = self._conn.execute(
