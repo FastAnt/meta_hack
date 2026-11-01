@@ -339,6 +339,9 @@ class SourcePriorityTests(CoreScenarioTests):
         self.core.refresh_agent_state()
         self.assertEqual(self.core.agent_state["agent"], "codex")
         self.assertEqual(self.core.agent_state["state"], "working")
+        muse = {"pid": 12, "ppid": 1, "comm": "muse",
+                "cmdline": "muse"}
+        self.core.snapshot = self._snap([codex, child, muse], 10)
         with self.core._lock:
             self.core.adapter_state = {"state": "working",
                                        "agent": "muse"}

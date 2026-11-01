@@ -931,6 +931,24 @@ class Core:
                 obs_busy = len(fam) > 1
         with self._lock:
             adapter_state = self.adapter_state
+        if adapter_state and self.adapter.current_file:
+            # Only an agent inside THIS terminal's process tree
+            # may drive the square. The session-log adapter also
+            # sees muse sessions it cannot attribute — another
+            # terminal, or the creator agent this app spawns
+            # itself; those must not pose as the user's agent
+            # (the square claimed 'Thinking' over an empty shell).
+            tree = snap.get("process_tree") or []
+            in_tree = any("muse" in (pr.get("comm") or "")
+                          or "muse" in (pr.get("cmdline") or "")
+                          for pr in tree)
+            if not in_tree:
+                if not getattr(self, "_ext_adapter_logged", False):
+                    self._ext_adapter_logged = True
+                    self.dlog("state", "adapter muse ignored: "
+                                       "not in this terminal's "
+                                       "process tree")
+                adapter_state = None
         if self.adapter.current_file and adapter_state:
             astate = adapter_state.get("state")
             # Adapter facts win — unless Muse is just sitting there
