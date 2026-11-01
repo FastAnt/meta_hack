@@ -1343,24 +1343,34 @@ def _coerce_vte_text(out) -> str:
     return out or ""
 
 
+_VTE_BROKEN = set()
+
+
 def _read_vte_text(term) -> str:
     """Best-effort read of the terminal's text. Some VTE builds
-    return None from get_text() (a C-side attributes assertion), so
-    try the alternatives and take the first that yields text."""
-    try:
-        text = _coerce_vte_text(term.get_text())
-        if text:
-            return text
-    except Exception:
-        pass
-    try:
-        rows = max(int(term.get_row_count()), 1)
-        cols = max(int(term.get_column_count()), 1)
-        text = _coerce_vte_text(term.get_text_range(0, 0, rows, cols))
-        if text:
-            return text
-    except Exception:
-        pass
+    return None from get_text() (a C-side attributes assertion,
+    printed on every call), so try the alternatives — and never
+    retry a strategy that already failed on this build, or the
+    assertion floods the launching terminal."""
+    if "get_text" not in _VTE_BROKEN:
+        try:
+            text = _coerce_vte_text(term.get_text())
+            if text:
+                return text
+            _VTE_BROKEN.add("get_text")
+        except Exception:
+            _VTE_BROKEN.add("get_text")
+    if "get_text_range" not in _VTE_BROKEN:
+        try:
+            rows = max(int(term.get_row_count()), 1)
+            cols = max(int(term.get_column_count()), 1)
+            text = _coerce_vte_text(
+                term.get_text_range(0, 0, rows, cols))
+            if text:
+                return text
+            _VTE_BROKEN.add("get_text_range")
+        except Exception:
+            _VTE_BROKEN.add("get_text_range")
     try:
         # get_text()/get_text_range() return None on some VTE builds
         # (deprecated attributes array); dumping the terminal to a
@@ -3129,31 +3139,55 @@ def run_gui(project_arg: str | None) -> int:
                 ctx.remove_class("react-on")
         core.dlog("content", f"reaction {kind} on {game['id']}")
 
+    def _kick_pick():
+        """Prefetch the next contextual pick off the GTK thread.
+        pick() embeds with the local model and asks System-1 —
+        seconds of work that must never block the UI (the pane
+        froze on open when this ran synchronously)."""
+        if S.get("_pick_busy") or not selector.indexed:
+            return
+        S["_pick_busy"] = True
+
+        def _work():
+            try:
+                ctx = _content_context()
+                exclude = set(engine._served)
+                pending = S.get("_pending_pick")
+                if pending:
+                    exclude.add(pending[0])
+                picked = selector.pick(ctx, project_path, exclude)
+                if picked:
+                    S["_pending_pick"] = picked
+                    core.dlog("content",
+                              f"pick prefetched: {picked[0]} "
+                              f"[{picked[1]}]")
+                    if picked[1] == "global":
+                        selector.evaluate_generation(
+                            ctx, project_path, 0.0, picked[2])
+            except Exception:
+                pass
+            finally:
+                S["_pick_busy"] = False
+
+        threading.Thread(target=_work, daemon=True).start()
+
     def serve_game(advance=True):
         ctl = S["game_ctl"]
         game = None
         if advance:
             _close_previous_serve()
-            if selector.indexed:
-                ctx = _content_context()
-                picked = selector.pick(ctx, project_path,
-                                       set(engine._served))
-                if picked:
-                    pid, source, sim = picked
-                    pack = engine.pack_by_id(pid)
-                    if pack is not None:
-                        game = engine.serve_specific(pack)
-                        core.dlog("content",
-                                  f"selector -> {pid} [{source}, "
-                                  f"sim {sim:.2f}]")
-                        if source == "global":
-                            _psim = sim
-                            threading.Thread(
-                                target=selector.evaluate_generation,
-                                args=(ctx, project_path, 0.0, _psim),
-                                daemon=True).start()
+            pending = S.pop("_pending_pick", None)
+            if pending:
+                pid, source, sim = pending
+                pack = engine.pack_by_id(pid)
+                if pack is not None and pid not in engine._served:
+                    game = engine.serve_specific(pack)
+                    core.dlog("content",
+                              f"selector -> {pid} [{source}, "
+                              f"sim {sim:.2f}]")
             if game is None:
                 game = engine.next_game()
+            _kick_pick()
             if game is not None and not _tour_raw:
                 ctl["serving_id"] = game["id"]
                 ctl["serving_at"] = time.time()
@@ -3562,6 +3596,7 @@ def run_gui(project_arg: str | None) -> int:
             if target == "terminal":
                 S["vte"].grab_focus()
             elif target == "content":
+                _kick_pick()
                 _maybe_serve()
             _move_view_btn(False)  # syncs tooltip + redraws the icon
         S["mode_btn"].queue_draw()
