@@ -32,6 +32,20 @@ class CreatorPromptTests(unittest.TestCase):
         self.assertIn("/app/games-base/AGENTS.md", text)
 
 
+class FailureReasonTests(unittest.TestCase):
+    def test_quota_line_is_the_reason(self):
+        lines = ["muse: workspace root: /p",
+                 "agent loop failed: model failed: API error "
+                 "429: Subscription quota exhausted. Your usage "
+                 "window resets at 2026-11-02T00:00:00Z."]
+        reason = _native().creator_failure_reason(lines)
+        self.assertIn("quota exhausted", reason)
+
+    def test_no_error_no_reason(self):
+        self.assertEqual(
+            _native().creator_failure_reason(["all good"]), "")
+
+
 class SubstanceTests(unittest.TestCase):
     def test_small_project_is_not_substantial(self):
         ok, _ = _native().project_substance(

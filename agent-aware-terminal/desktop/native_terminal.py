@@ -1527,6 +1527,16 @@ def creator_task_text(app_root, project_root, want_type,
         "line: the file you created.")
 
 
+def creator_failure_reason(lines) -> str:
+    """One honest line for a dead creator run: its own last
+    error (quota, auth, sandbox) beats 'no content'."""
+    import re as _re
+    for line in reversed([ln.strip() for ln in lines if ln.strip()]):
+        if _re.search(r"failed|error|quota|exhausted|denied", line, _re.I):
+            return line[:150]
+    return ""
+
+
 def project_substance(profile: dict) -> tuple:
     """Deterministic pre-gate for boot generation: is there
     enough project here to tailor content to?"""
@@ -1871,6 +1881,12 @@ def run_gui(project_arg: str | None) -> int:
     def spawn_creator(want_type, root, reason):
         if S.get("_creator_proc") is not None:
             return False
+        if time.time() - S.get("_creator_fail_at", 0) < 60:
+            S["game_fb"].set_text(
+                "The researcher just failed — see "
+                ".aat/research/creator.log; retry in a few "
+                "seconds.")
+            return False
         if os.environ.get("AAT_CREATOR") == "off":
             core.dlog("content", "creator disabled (AAT_CREATOR=off)")
             return False
@@ -1922,6 +1938,23 @@ def run_gui(project_arg: str | None) -> int:
         S["_creator_proc"] = None
         S["btn_idea"].set_sensitive(True)
         core.dlog("content", f"creator finished (exit {code})")
+        if code != 0:
+            S["_creator_fail_at"] = time.time()
+            reason = ""
+            try:
+                tail = (Path(root) / ".aat" / "research"
+                        / "creator.log").read_text(
+                            encoding="utf-8", errors="replace")
+                reason = creator_failure_reason(
+                    tail.splitlines()[-40:])
+            except Exception:
+                pass
+            core.dlog("content", f"creator failed: {reason}")
+            S["game_fb"].set_text(
+                "The researcher could not run"
+                + (f": {reason}" if reason else "")
+                + " (log: .aat/research/creator.log)")
+            return False
         engine.maybe_reload()
         try:
             packs, _ = ce.scan_packs(
