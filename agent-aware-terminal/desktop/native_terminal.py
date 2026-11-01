@@ -1527,6 +1527,56 @@ def creator_task_text(app_root, project_root, want_type,
         "line: the file you created.")
 
 
+def creator_command(env=None) -> list:
+    """Resolve the creator-agent settings into an argv prefix
+    (the mission prompt is appended by the caller).
+
+    Settings (environment):
+      AAT_CREATOR_PROVIDER  muse (default) | codex | custom
+      AAT_CREATOR_MODEL     model id for muse/codex (CLI default
+                            when unset)
+      AAT_CREATOR_CMD       full command for provider=custom
+                            (e.g. "deepseek-agent exec --yolo");
+                            setting it without a provider also
+                            selects custom, as before.
+    The creator writes into the project's .aat/ only (its
+    prompt says so); codex additionally runs in the
+    workspace-write sandbox."""
+    env = os.environ if env is None else env
+    provider = (env.get("AAT_CREATOR_PROVIDER") or "").strip().lower()
+    custom = (env.get("AAT_CREATOR_CMD") or "").strip()
+    if not provider:
+        provider = "custom" if custom else "muse"
+    model = (env.get("AAT_CREATOR_MODEL") or "").strip()
+    if provider == "muse":
+        argv = ["muse", "exec", "--yolo"]
+        if model:
+            argv += ["--model", model]
+        return argv
+    if provider == "codex":
+        # workspace-write is the safe default; on machines
+        # where Codex's bubblewrap cannot start (nested
+        # sandboxes) AAT_CREATOR_CODEX_SANDBOX=bypass trades
+        # the seatbelt for a working creator — the mission
+        # prompt still bounds writes to .aat/.
+        sandbox = (env.get("AAT_CREATOR_CODEX_SANDBOX")
+                   or "workspace-write").strip()
+        argv = ["codex", "exec", "--skip-git-repo-check"]
+        if sandbox == "bypass":
+            argv.append("--dangerously-bypass-approvals-and-sandbox")
+        else:
+            argv += ["-s", sandbox]
+        if model:
+            argv += ["-m", model]
+        return argv
+    if provider == "custom":
+        if not custom:
+            raise ValueError(
+                "AAT_CREATOR_PROVIDER=custom needs AAT_CREATOR_CMD")
+        return shlex.split(custom)
+    raise ValueError(f"unknown AAT_CREATOR_PROVIDER: {provider!r}")
+
+
 def creator_failure_reason(lines) -> str:
     """One honest line for a dead creator run: its own last
     error (quota, auth, sandbox) beats 'no content'."""
@@ -1891,8 +1941,12 @@ def run_gui(project_arg: str | None) -> int:
             core.dlog("content", "creator disabled (AAT_CREATOR=off)")
             return False
         root = str(root)
-        cmd = shlex.split(os.environ.get(
-            "AAT_CREATOR_CMD", "muse exec --yolo"))
+        try:
+            cmd = creator_command()
+        except ValueError as exc:
+            core.dlog("content", f"creator misconfigured: {exc}")
+            S["game_fb"].set_text(f"Creator misconfigured: {exc}")
+            return False
         task = (core.agent_state or {}).get("task") or ""
         prompt = creator_task_text(RES_ROOT, root, want_type, task)
         rdir = Path(root) / ".aat" / "research"
@@ -1918,7 +1972,7 @@ def run_gui(project_arg: str | None) -> int:
             "researcher agent is working…")
         core.dlog("content",
                   f"creator spawned ({reason}): {want_type} "
-                  f"for {root}")
+                  f"for {root} via {' '.join(cmd[:3])}")
 
         def _wait():
             try:
@@ -1950,10 +2004,16 @@ def run_gui(project_arg: str | None) -> int:
             except Exception:
                 pass
             core.dlog("content", f"creator failed: {reason}")
+            hint = ""
+            if "sandbox" in reason.lower() and (
+                    os.environ.get("AAT_CREATOR_PROVIDER")
+                    or "").lower() == "codex":
+                hint = (" Tip: AAT_CREATOR_CODEX_SANDBOX=bypass "
+                        "makes Codex work in this environment.")
             S["game_fb"].set_text(
                 "The researcher could not run"
                 + (f": {reason}" if reason else "")
-                + " (log: .aat/research/creator.log)")
+                + " (log: .aat/research/creator.log)." + hint)
             return False
         engine.maybe_reload()
         try:

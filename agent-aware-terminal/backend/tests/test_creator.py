@@ -86,3 +86,50 @@ class ProjectDirTests(unittest.TestCase):
             self.assertEqual([p["id"] for p in eng.packs],
                              ["fact-one"])
             self.assertFalse(eng.set_project_dir(pb))
+
+
+class ProviderCommandTests(unittest.TestCase):
+    def cmd(self, env):
+        return _native().creator_command(env)
+
+    def test_default_is_muse(self):
+        self.assertEqual(self.cmd({}),
+                         ["muse", "exec", "--yolo"])
+
+    def test_muse_model(self):
+        self.assertEqual(
+            self.cmd({"AAT_CREATOR_MODEL": "opus-x"}),
+            ["muse", "exec", "--yolo", "--model", "opus-x"])
+
+    def test_codex_with_model(self):
+        self.assertEqual(
+            self.cmd({"AAT_CREATOR_PROVIDER": "codex",
+                      "AAT_CREATOR_MODEL": "gpt-x"}),
+            ["codex", "exec", "--skip-git-repo-check",
+             "-s", "workspace-write", "-m", "gpt-x"])
+
+    def test_codex_bypass_sandbox(self):
+        self.assertEqual(
+            self.cmd({"AAT_CREATOR_PROVIDER": "codex",
+                      "AAT_CREATOR_CODEX_SANDBOX": "bypass"}),
+            ["codex", "exec", "--skip-git-repo-check",
+             "--dangerously-bypass-approvals-and-sandbox"])
+
+    def test_custom_verbatim(self):
+        self.assertEqual(
+            self.cmd({"AAT_CREATOR_PROVIDER": "custom",
+                      "AAT_CREATOR_CMD": "deepseek exec --yolo"}),
+            ["deepseek", "exec", "--yolo"])
+
+    def test_legacy_cmd_selects_custom(self):
+        self.assertEqual(
+            self.cmd({"AAT_CREATOR_CMD": "my-agent run"}),
+            ["my-agent", "run"])
+
+    def test_custom_without_cmd_is_an_error(self):
+        with self.assertRaises(ValueError):
+            self.cmd({"AAT_CREATOR_PROVIDER": "custom"})
+
+    def test_unknown_provider_is_an_error(self):
+        with self.assertRaises(ValueError):
+            self.cmd({"AAT_CREATOR_PROVIDER": "nope"})

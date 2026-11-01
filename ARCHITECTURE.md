@@ -236,7 +236,7 @@ do not surface generated imagery in the pane.
 `AAT_TOUR_TYPE=game|fact|news|idea`, `AAT_MOCKSTATE=<mode>`,
 `AAT_SIM_FILE`, `AAT_OPEN_OVERLAY=1`, `AAT_APP_ID` (unique id
 for parallel test instances — the app is single-instance),
-`AAT_CREATOR_CMD` (creator agent command — the app spawns it for project content; default `muse exec --yolo`), `AAT_CREATOR=off` (never spawn the creator), `AAT_KEYS_FILE`, `LIQUID_MODEL`, `AAT_TURN_END_CONFIRM_S` (seconds a non-work screen verdict must persist before a screen-driven turn counts as ended; default 4), plus keys from `keys.sh`.
+`AAT_CREATOR_PROVIDER=muse|codex|custom` (who creates project content; default muse), `AAT_CREATOR_MODEL`, `AAT_CREATOR_CODEX_SANDBOX` (workspace-write default; `bypass` where Codex's own sandbox cannot start) (model id for muse/codex), `AAT_CREATOR_CMD` (full command for provider=custom — any agent CLI that takes the mission as its last argument, e.g. a DeepSeek runner; setting it alone also selects custom), `AAT_CREATOR=off` (never spawn the creator), `AAT_KEYS_FILE`, `LIQUID_MODEL`, `AAT_TURN_END_CONFIRM_S` (seconds a non-work screen verdict must persist before a screen-driven turn counts as ended; default 4), plus keys from `keys.sh`.
 
 ### Creator auto-launch
 
