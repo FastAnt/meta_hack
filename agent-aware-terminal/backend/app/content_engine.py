@@ -468,7 +468,8 @@ class ContentEngine:
     `state_path` so the rule survives app restarts too."""
 
     def __init__(self, dirs, seed: int | None = None,
-                 state_path=None):
+                 state_path=None, only_types=None):
+        self.only_types = set(only_types) if only_types else None
         self.dirs = [Path(d) for d in dirs]
         self._rng = random.Random(seed)
         self.packs: list[dict] = []
@@ -506,6 +507,9 @@ class ContentEngine:
     def reload(self):
         self._signature = self._dir_signature()
         self.packs, self.errors = scan_packs(self.dirs)
+        if self.only_types:
+            self.packs = [pk for pk in self.packs
+                          if resolve_type(pk) in self.only_types]
         self.deck = list(self.packs)
         self._rng.shuffle(self.deck)
         ids = {p["id"] for p in self.packs}

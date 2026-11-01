@@ -1532,11 +1532,17 @@ def run_gui(project_arg: str | None) -> int:
     # score live in memory only, nothing is written to the real
     # content_state.json.
     _tour_raw = os.environ.get("AAT_TOUR", "")
+    _tour_type = os.environ.get("AAT_TOUR_TYPE", "").strip().lower()
+    _only_types = {_tour_type} if _tour_type in (
+        "game", "news", "idea", "fact") else None
     engine = ContentEngine(
         _content_dirs,
         state_path=None if _tour_raw
-        else DATA_DIR / "content_state.json")
+        else DATA_DIR / "content_state.json",
+        only_types=_only_types)
     core.dlog("content", f"{len(engine.packs)} content packs loaded"
+              + (f" (type filter: {_tour_type})" if _only_types
+                 else "")
               + (f"; pack errors: {'; '.join(engine.errors[:2])}"
                  if engine.errors else ""))
 

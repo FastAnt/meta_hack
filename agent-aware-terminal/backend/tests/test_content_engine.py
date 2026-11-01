@@ -26,6 +26,8 @@ class ShippedPacksTests(unittest.TestCase):
 
     def test_each_game_is_answerable(self):
         packs, _ = ce.scan_packs([GAMES_DIR])
+        packs = [p for p in packs
+                 if ce.resolve_type(p) == "game"]
         for pack in packs:
             targets = {c["id"] for c in pack.get("choices") or []} | \
                 set(ce.scene_targets(pack))
@@ -210,6 +212,8 @@ class AnimationTests(unittest.TestCase):
 
     def test_shipped_games_are_animated(self):
         packs, _ = ce.scan_packs([GAMES_DIR])
+        packs = [p for p in packs
+                 if ce.resolve_type(p) == "game"]
         for pack in packs:
             if callable(pack.get("_paint")):
                 continue  # motion asserted by the paint test
@@ -352,3 +356,20 @@ class ContentTypeTests(unittest.TestCase):
             self.assertEqual(engine.next_game()["type"], "fact")
             self.assertIsNone(engine.answer("x")["correct"])
             self.assertEqual(engine.score["answered"], 0)
+
+
+class TypeFilterTests(unittest.TestCase):
+    def test_only_types_filters_the_deck(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pathlib.Path(tmp, "g.json").write_text(json.dumps({
+                "id": "g1", "type": "game", "title": "G",
+                "choices": [{"id": "a", "label": "A"}],
+                "answer": "a", "explanation": "e"}))
+            pathlib.Path(tmp, "f.json").write_text(json.dumps({
+                "id": "f1", "type": "fact", "title": "F",
+                "body": "Because."}))
+            engine = ce.ContentEngine([tmp], seed=1,
+                                      only_types={"fact"})
+            self.assertEqual([p["id"] for p in engine.packs], ["f1"])
+            self.assertEqual(engine.next_game()["id"], "f1")
+            self.assertEqual(engine.progress(), (1, 1))
