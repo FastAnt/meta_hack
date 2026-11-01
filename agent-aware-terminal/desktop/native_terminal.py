@@ -2440,19 +2440,17 @@ def run_gui(project_arg: str | None) -> int:
         fb_row.pack_end(S["btn_open"], False, False, 0)
         fb_row.pack_end(S["btn_save"], False, False, 0)
         game_box.pack_start(fb_row, False, False, 8)
-        S["btn_gen"] = Gtk.Button(label="+")
-        S["btn_gen"].set_tooltip_text(
-            "Generate a game from code (coming soon)")
-        S["btn_gen"].get_style_context().add_class("feed-action")
-        S["btn_gen"].connect(
-            "clicked", lambda *_: game_placeholder("generate"))
-        S["btn_idea"] = Gtk.Button(label="\U0001F4A1")
-        S["btn_idea"].set_tooltip_text("Suggestions (coming soon)")
+        S["btn_idea"] = Gtk.Button()
+        S["btn_idea"].set_tooltip_text(
+            "Pick what content to generate next")
         S["btn_idea"].get_style_context().add_class("feed-action")
-        S["btn_idea"].connect(
-            "clicked", lambda *_: game_placeholder("ideas"))
+        bulb = Gtk.DrawingArea()
+        bulb.set_size_request(16, 16)
+        bulb.connect("draw", draw_bulb)
+        S["btn_idea"].add(bulb)
+        S["btn_idea"].connect("clicked",
+                              lambda *_: idea_pick_type())
         top_row.pack_end(S["btn_idea"], False, False, 0)
-        top_row.pack_end(S["btn_gen"], False, False, 4)
         S["game_box"] = game_box
         game_scroll = Gtk.ScrolledWindow()
         game_scroll.set_policy(Gtk.PolicyType.NEVER,
@@ -2828,11 +2826,37 @@ def run_gui(project_arg: str | None) -> int:
         S["game_scene"].queue_draw()
         core.dlog("content", f"serving {game.get('id')}")
 
-    def game_placeholder(which: str):
-        msg = {"generate": "Game generation from code is coming soon.",
-               "ideas": "Suggestions are coming soon."}.get(which, "")
-        S["game_fb"].set_text(msg)
-        core.dlog("content", f"placeholder action: {which}")
+    def draw_bulb(area, cr):
+        # A lightbulb stroked in the text colour — monochrome
+        # in both themes (the emoji was full colour).
+        w = area.get_allocated_width()
+        h = area.get_allocated_height()
+        cx, cy = w / 2, h / 2 - 1.5
+        cr.set_source_rgba(*PALC["text"], 0.95)
+        cr.set_line_width(1.3)
+        cr.arc(cx, cy, 4.6, 0, 6.2832)
+        cr.stroke()
+        for dy in (4.2, 6.0):
+            cr.move_to(cx - 2.2, cy + dy)
+            cr.line_to(cx + 2.2, cy + dy)
+            cr.stroke()
+        return False
+
+    def choose_content_type():
+        # TODO: choose from deck statistics instead of dice —
+        # underrepresented types first, weighted by the project
+        # domain and what the user actually answers/saves.
+        import random
+        return random.choice(["game", "fact", "news", "idea"])
+
+    def idea_pick_type():
+        picked = choose_content_type()
+        S["game_fb"].set_text(
+            f"Next content to generate: {picked}. (Random pick "
+            "for now — statistics-based choice is a TODO; the "
+            "researcher agent will create it.)")
+        core.dlog("content",
+                  f"generation type picked: {picked} (random)")
 
     def game_open_link():
         game = S["game_ctl"].get("game") or {}
