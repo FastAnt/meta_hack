@@ -1,5 +1,9 @@
 # Skill: fact forge (interesting fact cards)
 
+Canonical guide: `games-base/FACTS.md` (what makes a fact
+interesting, sourcing rules, the 500-fact campaign). This
+skill is the project-correlated short version.
+
 A fact card is unscored companion content: one surprising,
 true, project-relevant fact. Use it when a fact teaches more
 than a quiz would, or as the deliverable for a weak-signal
