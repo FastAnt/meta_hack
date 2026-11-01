@@ -2454,7 +2454,12 @@ def run_gui(project_arg: str | None) -> int:
         top_row.pack_end(S["btn_idea"], False, False, 0)
         top_row.pack_end(S["btn_gen"], False, False, 4)
         S["game_box"] = game_box
-        content.pack_start(game_box, True, True, 0)
+        game_scroll = Gtk.ScrolledWindow()
+        game_scroll.set_policy(Gtk.PolicyType.NEVER,
+                               Gtk.PolicyType.AUTOMATIC)
+        game_scroll.add(game_box)
+        S["game_scroll"] = game_scroll
+        content.pack_start(game_scroll, True, True, 0)
         empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
                             spacing=10)
         empty_box.set_halign(Gtk.Align.CENTER)
@@ -2667,10 +2672,13 @@ def run_gui(project_arg: str | None) -> int:
             # Frame-clock redraw: synced to the display refresh
             # (60 Hz) instead of a coarse 50 ms timer, so game
             # motion is sampled smoothly. Cheap guard first.
-            game = S["game_ctl"].get("game")
+            ctl = S["game_ctl"]
+            game = ctl.get("game")
+            verdict_live = ctl.get("verdict") is not None and \
+                time.time() - ctl.get("verdict_t0", 0) < 1.2
             if S["overlay_on"] and game \
                     and ((game.get("scene") or {}).get("anim")
-                         or game.get("_paint")) \
+                         or game.get("_paint") or verdict_live) \
                     and S["left_stack"].get_visible_child_name() \
                     == "content":
                 S["game_scene"].queue_draw()
@@ -2766,13 +2774,13 @@ def run_gui(project_arg: str | None) -> int:
         ctl = S["game_ctl"]
         game = engine.next_game() if advance else engine.current()
         ctl.update(game=game, answered=False, chosen=None, btns={},
-                   t0=time.time())
+                   t0=time.time(), verdict=None, verdict_t0=0.0)
         if game is None:
-            S["game_box"].hide()
+            S["game_scroll"].hide()
             S["game_empty"].show_all()
             return
         S["game_empty"].hide()
-        S["game_box"].show_all()
+        S["game_scroll"].show_all()
         ptype = game.get("type", "game")
         S["game_title"].set_text(game.get("title", ""))
         S["game_hint"].set_text(game.get("hint", ""))
@@ -2855,6 +2863,8 @@ def run_gui(project_arg: str | None) -> int:
         ctl["answered"] = True
         ctl["chosen"] = target
         out = engine.answer(target)
+        ctl["verdict"] = out["correct"]
+        ctl["verdict_t0"] = time.time()
         expl = out.get("explanation") or ""
         head = {True: "\u2713 Correct. ",
                 False: "\u2717 Not quite. "}.get(out["correct"], "")
@@ -2879,6 +2889,12 @@ def run_gui(project_arg: str | None) -> int:
                 b.get_style_context().add_class("choice-wrong")
         S["game_next"].show()
         S["game_scene"].queue_draw()
+
+        def _to_bottom():
+            adj = S["game_scroll"].get_vadjustment()
+            adj.set_value(max(adj.get_upper() - adj.get_page_size(), 0))
+            return False
+        GLib.idle_add(_to_bottom)
         core.dlog("content", f"answer {target} in {game.get('id')}: "
                              f"correct={out['correct']}")
 
@@ -2918,6 +2934,36 @@ def run_gui(project_arg: str | None) -> int:
             cr.set_source_rgba(*PALC["muted"], 0.9)
             cr.move_to(24, 40)
             cr.show_text("This game failed to render.")
+        verdict = ctl.get("verdict")
+        if verdict is not None \
+                and game.get("type", "game") == "game":
+            # End-of-game badge: a filled square pops into the
+            # centre of the scene with a check or a cross —
+            # the same language as the status square's DONE.
+            dt = max(time.time() - ctl.get("verdict_t0", 0.0), 0.0)
+            pop = min(1.0, dt / 0.35)
+            ease = 1.0 - (1.0 - pop) ** 3
+            side = min(w, h) * 0.30 * (0.55 + 0.45 * ease)
+            alpha = min(1.0, dt / 0.12) * 0.96
+            cx, cy = w / 2, h / 2
+            x, y = cx - side / 2, cy - side / 2
+            r = side * 0.16
+            cr.new_path()
+            cr.arc(x + side - r, y + r, r, -1.5708, 0)
+            cr.arc(x + side - r, y + side - r, r, 0, 1.5708)
+            cr.arc(x + r, y + side - r, r, 1.5708, 3.1416)
+            cr.arc(x + r, y + r, r, 3.1416, 4.7124)
+            cr.close_path()
+            cr.set_source_rgba(*PALC["square"], alpha)
+            cr.fill()
+            glyph = "\u2713" if verdict else "\u2717"
+            cr.select_font_face("Inter", 0, 1)
+            cr.set_font_size(side * 0.6)
+            ext = cr.text_extents(glyph)
+            cr.move_to(cx - ext.width / 2 - ext.x_bearing,
+                       cy - ext.height / 2 - ext.y_bearing)
+            cr.set_source_rgba(*PALC["bg"], alpha)
+            cr.show_text(glyph)
         return False
 
     def on_game_scene_click(_w, event):
@@ -3029,8 +3075,19 @@ def run_gui(project_arg: str | None) -> int:
                 ctrl_shift and kv in (Gdk.KEY_S, Gdk.KEY_s):
             set_overlay(not S["overlay_on"])
             return True
+        if kv == Gdk.KEY_F11:
+            if S.get("_fullscreen"):
+                win.unfullscreen()
+                S["_fullscreen"] = False
+            else:
+                win.fullscreen()
+                S["_fullscreen"] = True
+            return True
         if kv == Gdk.KEY_Escape:
-            if S["panel_on"]:
+            if S.get("_fullscreen"):
+                win.unfullscreen()
+                S["_fullscreen"] = False
+            elif S["panel_on"]:
                 toggle_panel(False)
             elif S["overlay_on"] and \
                     S["left_stack"].get_visible_child_name() == "content":
