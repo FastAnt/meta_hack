@@ -352,6 +352,11 @@ class Core:
     def _finish_observed_turn(self, agent: str, final: str, secs: int):
         """End-of-turn results for adapter-less agents (Codex, ...):
         measured files + a System-1 verdict over the console tail."""
+        if getattr(self, "_finalized_at", 0) \
+                and time.time() - self._finalized_at < 15 \
+                and self.results and self.results.get("observed"):
+            return  # this turn was already finalized
+        self._finalized_at = time.time()
         if self._baseline is not None:
             files = session_diff(self.project_path, self._baseline)
             self._baseline = None
@@ -498,6 +503,10 @@ class Core:
                    "writing_code", "installing", "downloading",
                    "compiling", "running_tests", "waiting_for_user",
                    "asking_question"}
+    # Settings: how long a non-work screen verdict must persist
+    # before a screen-driven turn counts as ended.
+    TURN_END_CONFIRM_S = float(
+        os.environ.get("AAT_TURN_END_CONFIRM_S", "4"))
 
     def _screen_turn_tick(self, agent_name, choice, conf):
         """End-of-turn detection for adapter-less agents.
@@ -516,6 +525,8 @@ class Core:
                 self._screen_turn_failed = False
                 self._screen_turn_since = time.time()
                 self._screen_turn_agent = agent_name
+                self._finalized_at = 0.0
+                self._start_baseline()
             oc = self._last_outcome
             if oc and oc.get("mode") == "done" \
                     and oc.get("agent") == agent_name:
@@ -563,9 +574,9 @@ class Core:
                 # One prompt flash mid-turn must not end it
                 # (Codex shows its prompt between steps while
                 # "Working (...)" continues). The end verdict
-                # has to persist: >= 3 confident verdicts over
-                # >= 8 s. Weak verdicts neither advance nor
-                # reset the confirmation.
+                # has to persist: >= 2 confident verdicts over
+                # >= TURN_END_CONFIRM_S seconds. Weak verdicts
+                # neither advance nor reset the confirmation.
                 if conf >= 0.35:
                     now = time.time()
                     if not getattr(self, "_screen_end_since", 0):
@@ -573,8 +584,9 @@ class Core:
                         self._screen_end_count = 0
                     self._screen_end_count = getattr(
                         self, "_screen_end_count", 0) + 1
-                    if self._screen_end_count >= 3 \
-                            and now - self._screen_end_since >= 8:
+                    if self._screen_end_count >= 2 \
+                            and now - self._screen_end_since \
+                            >= self.TURN_END_CONFIRM_S:
                         self._last_outcome = {
                             "key": getattr(self,
                                            "_agent_key_now", None),
@@ -587,6 +599,12 @@ class Core:
                         self._screen_end_count = 0
                         self._screen_end_since = 0.0
                         self._screen_turn_active = False
+                        self._finish_observed_turn(
+                            agent_name,
+                            "failed" if getattr(
+                                self, "_screen_turn_failed",
+                                False) else "completed",
+                            int(time.time() - started))
                 return
             self._screen_turn_active = False
 
@@ -632,10 +650,12 @@ class Core:
                 try:
                     out = self.liquid.classify_screen(
                         screen, agent.get("agent") or "agent")
+                    _lines = [ln for ln in screen.splitlines()
+                              if ln.strip()]
                     if out and out["choice"] in (
                             "idle_at_prompt", "finished") and re.search(
                             r"esc to interrupt|Working \(\d",
-                            screen):
+                            "\n".join(_lines[-5:])):
                         # The screen itself proves work is in
                         # progress ("Working (1m 42s - esc to
                         # interrupt)"); a model verdict cannot
@@ -896,6 +916,7 @@ class Core:
                 if self._busy_started_at is None:
                     self._busy_started_at = time.time()
                 if not prev or prev[1] not in busy_states:
+                    self._finalized_at = 0.0
                     self._start_baseline()
                 if self._last_outcome:
                     self._last_outcome = None

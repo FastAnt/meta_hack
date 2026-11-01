@@ -57,6 +57,18 @@ class ScreenTurnTests(unittest.TestCase):
         self.assertIsNone(self.core._last_outcome)
         self.assertTrue(self.core._screen_turn_active)
 
+    def test_confirmed_end_computes_results(self):
+        # The DONE window must carry FILES/DONE/SAFE: a confirmed
+        # screen-turn end finalizes the observed turn.
+        self._work()
+        self.core._screen_turn_tick("codex", "idle_at_prompt", 0.9)
+        self.core._screen_end_since -= 20
+        self.core._screen_turn_tick("codex", "idle_at_prompt", 0.9)
+        self.assertIsNotNone(self.core.results)
+        self.assertTrue(self.core.results["observed"])
+        self.assertEqual(self.core.results["final_state"],
+                         "completed")
+
     def test_work_resumption_clears_stale_done(self):
         self.core._last_outcome = {
             "key": "k", "agent": "codex", "mode": "done"}

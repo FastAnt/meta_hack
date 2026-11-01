@@ -236,7 +236,7 @@ do not surface generated imagery in the pane.
 `AAT_TOUR_TYPE=game|fact|news|idea`, `AAT_MOCKSTATE=<mode>`,
 `AAT_SIM_FILE`, `AAT_OPEN_OVERLAY=1`, `AAT_APP_ID` (unique id
 for parallel test instances — the app is single-instance),
-`AAT_KEYS_FILE`, `LIQUID_MODEL`, plus keys from `keys.sh`.
+`AAT_KEYS_FILE`, `LIQUID_MODEL`, `AAT_TURN_END_CONFIRM_S` (seconds a non-work screen verdict must persist before a screen-driven turn counts as ended; default 4), plus keys from `keys.sh`.
 
 ## Development workflow
 
