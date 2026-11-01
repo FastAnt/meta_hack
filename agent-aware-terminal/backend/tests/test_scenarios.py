@@ -346,6 +346,16 @@ class SourcePriorityTests(CoreScenarioTests):
         self.assertEqual(self.core.agent_state["agent"], "muse")
 
 
+def _confirm_end(core, choice="idle_at_prompt"):
+    """Feed a persistent end verdict the way the live classifier
+    would: repeated, confident, spread over time."""
+    core._screen_turn_tick("codex", choice, 0.8)
+    if getattr(core, "_screen_end_since", 0):
+        core._screen_end_since -= 20
+    core._screen_turn_tick("codex", choice, 0.8)
+    core._screen_turn_tick("codex", choice, 0.8)
+
+
 class ScreenTurnTests(CoreScenarioTests):
     def _codex_idle_snapshot(self):
         codex = {"pid": 10, "ppid": 1, "comm": "codex",
@@ -357,7 +367,7 @@ class ScreenTurnTests(CoreScenarioTests):
         core = self.core
         core._screen_turn_tick("codex", "thinking", 0.9)
         core._screen_turn_since = time.time() - 30
-        core._screen_turn_tick("codex", "idle_at_prompt", 0.8)
+        _confirm_end(core)
         self._codex_idle_snapshot()
         self.assertTrue(core.agent_state.get("turn_done"))
         self.assertEqual(
@@ -375,7 +385,7 @@ class ScreenTurnTests(CoreScenarioTests):
         core._screen_turn_tick("codex", "writing_code", 0.9)
         core._screen_turn_tick("codex", "failed", 0.9)
         core._screen_turn_since = time.time() - 30
-        core._screen_turn_tick("codex", "idle_at_prompt", 0.8)
+        _confirm_end(core)
         self._codex_idle_snapshot()
         self.assertFalse(core.agent_state.get("turn_done"))
 

@@ -158,9 +158,10 @@ searching_web / writing_code / waiting_for_user, throttled, cached
 briefly) — System 1 arbitrates exactly the ambiguous moments.
 
 Palettes are Linear-style token stacks (dark: `#08090a` canvas, `#f7f8f8`
-text, 1px `#23252a` borders; light: the same roles inverted). The theme is
-read from GTK settings at startup (`AAT_THEME=dark|light` overrides, for
-screenshots). Richer visualization — architecture, plans, generated
+text, 1px `#23252a` borders; light: the same roles inverted). The header
+theme icon cycles Auto (follows the GTK system theme, switching live) →
+Light → Dark, persisted in `ui_prefs.json`; `AAT_THEME=dark|light` sets
+the initial mode, for screenshots. Richer visualization — architecture, plans, generated
 worlds — returns in the next design iteration, once we agree how to show
 more data; the Muse Image / Spark pipelines remain in `Core` meanwhile.
 
@@ -174,8 +175,7 @@ For reproducible screenshots there is a dev env var
 `AAT_MOCKSTATE=idle|working|thinking|attention|completed|glitch|trail` —
 it substitutes only the display, not the data.
 
-Known limitations: theme is chosen at startup (no live system-theme
-switching yet); on the `TRAIL`/`GLITCH` distinction the app relies on
+Known limitations: on the `TRAIL`/`GLITCH` distinction the app relies on
 tool names, so an agent that hides its tools degrades to BUILD ON.
 
 ## How the spec phases map to code

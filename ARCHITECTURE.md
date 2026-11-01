@@ -80,8 +80,10 @@ muse_adapter (session      Core.refresh_agent_state()
                              │  → session_diff (FILES) → System-1
                              │  scoring (DONE/SAFE) at turn end
                              └─ decision log (every judgment)
-GUI (GTK): header (status pill, Feed, mode button), left pane
-(terminal ⇄ content), right pane (AgentSquare + result squares)
+GUI (GTK): header (theme cycle button, mode square, menu — no
+title, no status pill), two panes whose pairing the view cycle
+button chooses (terminal/feed/visualisation), right pane
+(AgentSquare + result squares)
 content_engine ◄── packs from disk (games-base, user dir,
                              project .aat/content) ──► content_selector
                              (vector RAG + System-1 pick +
@@ -129,10 +131,18 @@ tags `[state] [gate] [system1] [mode] [score] [ui] [content]`).
 ### Attention model (UI)
 
 The Visualization-mode button (mini square in the header)
-toggles the right status pane. Left pane rule: agent busy
-≥ 7 s → companion content; agent waits/finishes → terminal.
-Clicking the big square swaps panes manually until the phase
-changes. Esc peels back layer by layer.
+toggles the two-pane split. Inside the split, a borderless view
+icon (on the right pane) cycles the pairing like the theme icon
+cycles auto → light → dark: Terminal + visualisation → Feed +
+visualisation → Terminal + Feed → back (in Terminal + Feed the
+icon sits on the Feed pane, so the cycle is always reachable).
+Left pane rule: agent busy ≥ 7 s → companion content; agent
+waits/finishes → terminal. Clicking the big square swaps panes
+manually until the phase changes. Esc peels back layer by layer.
+The header theme icon cycles Auto (follows the system, switches
+live) → Light → Dark; the choice persists in `ui_prefs.json`
+(together with the view pairing). Icon-only buttons carry no
+border/outline anywhere; hover alone highlights them.
 
 ### Content system
 
@@ -214,14 +224,14 @@ do not surface generated imagery in the pane.
 
 | Location | Contents |
 | --- | --- |
-| `~/.local/share/agent-aware-terminal/` | `decisions.log`, `content_state.json` (deck progress), `content_index.db` (vectors/reactions/serves), `models/embeddinggemma2/` (~350 MB, downloaded once), `demo_project/` runtime copy |
+| `~/.local/share/agent-aware-terminal/` | `decisions.log`, `content_state.json` (deck progress), `content_index.db` (vectors/reactions/serves), `ui_prefs.json` (theme mode + view pairing), `models/embeddinggemma2/` (~350 MB, downloaded once), `demo_project/` runtime copy |
 | `<project>/.aat/content/` | Researcher-deposited packs (commit these) |
 | `<project>/.aat/research/` | `domain_profile.json`, `brief.md`, `lifecycle.jsonl`, `saved_ideas.jsonl`, `generation_requests.jsonl` |
 | `dist/agent-aware-terminal/games-base/` | Build-time copy of the submodule — the app reads *this*, rebuild to refresh |
 
 ## Environment variables
 
-`AAT_PROJECT`, `AAT_CONTENT_DIR`, `AAT_THEME=dark|light`,
+`AAT_PROJECT`, `AAT_CONTENT_DIR`, `AAT_THEME=dark|light` (initial theme mode; the header icon cycles auto/light/dark afterwards),
 `AAT_TOUR=<sec>|manual` (review mode; statistics sandboxed),
 `AAT_TOUR_TYPE=game|fact|news|idea`, `AAT_MOCKSTATE=<mode>`,
 `AAT_SIM_FILE`, `AAT_OPEN_OVERLAY=1`, `AAT_APP_ID` (unique id

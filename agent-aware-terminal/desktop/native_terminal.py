@@ -22,6 +22,7 @@ AAT_MOCKSTATE=idle|working|thinking|attention|completed (display-only).
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -508,11 +509,22 @@ class Core:
         after a real turn arm the DONE window, just like the
         process-driven path does."""
         if choice in self.SCREEN_WORK and conf >= 0.45:
+            self._screen_end_count = 0
+            self._screen_end_since = 0.0
             if not getattr(self, "_screen_turn_active", False):
                 self._screen_turn_active = True
                 self._screen_turn_failed = False
                 self._screen_turn_since = time.time()
                 self._screen_turn_agent = agent_name
+            oc = self._last_outcome
+            if oc and oc.get("mode") == "done" \
+                    and oc.get("agent") == agent_name:
+                # Fresh work evidence cancels a stale DONE: the
+                # agent demonstrably resumed (its previous
+                # "ending" was a mid-turn prompt flash).
+                self._last_outcome = None
+                self.dlog("mode", "sticky done cleared: work "
+                                  f"resumed ({agent_name})")
             return
         if choice == "failed":
             if getattr(self, "_screen_turn_active", False):
@@ -546,15 +558,36 @@ class Core:
             if active and agent_name == getattr(
                     self, "_screen_turn_agent", None) \
                     and time.time() - started >= 5 \
-                    and not getattr(self, "_screen_turn_failed", False) \
-                    and (choice == "idle_at_prompt" or conf >= 0.25):
-                if True:
-                    self._last_outcome = {
-                        "key": getattr(self, "_agent_key_now", None),
-                        "agent": agent_name, "mode": "done"}
-                    self.dlog("mode", "screen turn ended -> sticky "
-                                      f"done ({agent_name}, "
-                                      f"via {choice})")
+                    and not getattr(self, "_screen_turn_failed",
+                                    False):
+                # One prompt flash mid-turn must not end it
+                # (Codex shows its prompt between steps while
+                # "Working (...)" continues). The end verdict
+                # has to persist: >= 3 confident verdicts over
+                # >= 8 s. Weak verdicts neither advance nor
+                # reset the confirmation.
+                if conf >= 0.35:
+                    now = time.time()
+                    if not getattr(self, "_screen_end_since", 0):
+                        self._screen_end_since = now
+                        self._screen_end_count = 0
+                    self._screen_end_count = getattr(
+                        self, "_screen_end_count", 0) + 1
+                    if self._screen_end_count >= 3 \
+                            and now - self._screen_end_since >= 8:
+                        self._last_outcome = {
+                            "key": getattr(self,
+                                           "_agent_key_now", None),
+                            "agent": agent_name, "mode": "done"}
+                        self.dlog("mode", "screen turn ended -> "
+                                          "sticky done "
+                                          f"({agent_name}, via "
+                                          f"{choice}, confirmed "
+                                          f"{self._screen_end_count}x)")
+                        self._screen_end_count = 0
+                        self._screen_end_since = 0.0
+                        self._screen_turn_active = False
+                return
             self._screen_turn_active = False
 
     def classify_tick(self, agent: dict, screen: str = ""):
@@ -599,6 +632,21 @@ class Core:
                 try:
                     out = self.liquid.classify_screen(
                         screen, agent.get("agent") or "agent")
+                    if out and out["choice"] in (
+                            "idle_at_prompt", "finished") and re.search(
+                            r"esc to interrupt|Working \(\d",
+                            screen):
+                        # The screen itself proves work is in
+                        # progress ("Working (1m 42s - esc to
+                        # interrupt)"); a model verdict cannot
+                        # overrule visible text.
+                        out = {**out, "choice": "thinking",
+                               "mode": "flash",
+                               "confidence": max(
+                                   out["confidence"], 0.5)}
+                        self.dlog("system1", "screen marker veto: "
+                                             "working text visible, "
+                                             "verdict -> thinking")
                     if out:
                         self.liquid_stats["screen_ok"] += 1
                         self.liquid_stats["last_choice"] = out["choice"]
@@ -1196,7 +1244,9 @@ def build_css(dark: bool) -> bytes:
     p = PALETTES["dark" if dark else "light"]
     return f"""
 .scene {{ background: {p['bg']}; }}
-.ov-project {{ color: {p['text']}; font-family: {GROTESK}; font-size: 15px; font-weight: 600; letter-spacing: -0.15px; }}
+headerbar {{ background: {p['bg']}; color: {p['text']}; border-bottom: 1px solid {p['border']}; box-shadow: none; }}
+headerbar button {{ background: transparent; color: {p['body']}; border: none; box-shadow: none; }}
+headerbar button:hover {{ background: {p['surface2']}; color: {p['text']}; }}
 .sys1-banner {{
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px; letter-spacing: 0.08em;
@@ -1215,16 +1265,14 @@ button.choice {{ background: transparent; color: {p['body']}; border: 1px solid 
 button.choice:hover {{ border-color: {p['text']}; color: {p['text']}; }}
 button.choice-right {{ background: {p['text']}; color: {p['bg']}; border-color: {p['text']}; }}
 .fb-ok {{ font-size: 15px; font-weight: 600; color: {p['text']}; }}
-button.react-on {{ background: {p['text']}; color: {p['bg']}; border-color: {p['text']}; }}
+button.react-on {{ background: {p['surface2']}; color: {p['text']}; }}
 .fb-no {{ font-size: 15px; font-weight: 600; color: {p['muted']}; }}
 button.choice-wrong {{ color: {p['muted']}; border-color: {p['muted']}; }}
-button.game-next {{ background: transparent; color: {p['text']}; border: 1px solid {p['text']}; border-radius: 9999px; padding: 7px 16px; font-family: {GROTESK}; font-size: 13px; box-shadow: none; }}
-button.feed-action {{ background: transparent; color: {p['body']}; border: 1px solid {p['border']}; border-radius: 9999px; min-width: 38px; min-height: 32px; font-family: {GROTESK}; font-size: 15px; box-shadow: none; }}
-button.feed-action:hover {{ border-color: {p['text']}; color: {p['text']}; }}
-.mode-agent {{ color: {p['muted']}; font-family: {MONO}; font-size: 10px; letter-spacing: 2.5px; }}
-button.term-return {{ color: {p['text']}; background: transparent; border: 1px solid {p['text']}; border-radius: 9999px; padding: 7px 16px; font-family: {GROTESK}; font-size: 13px; font-weight: 500; }}
-button.term-return:hover {{ background: {p['surface2']}; }}
-button.quiet {{ color: {p['muted']}; background: transparent; border: none; font-family: {GROTESK}; font-size: 15px; padding: 4px 8px; }}
+button.game-next {{ background: transparent; color: {p['text']}; border: none; border-radius: 9999px; padding: 7px 16px; font-family: {GROTESK}; font-size: 13px; box-shadow: none; }}
+button.game-next:hover {{ background: {p['surface2']}; }}
+button.icon-btn {{ background: transparent; color: {p['body']}; border: none; border-radius: 9999px; min-width: 32px; min-height: 32px; padding: 4px; font-family: {GROTESK}; font-size: 15px; box-shadow: none; }}
+button.icon-btn:hover {{ background: {p['surface2']}; color: {p['text']}; }}
+button.quiet {{ color: {p['muted']}; background: transparent; border: none; box-shadow: none; font-family: {GROTESK}; font-size: 15px; padding: 4px 8px; }}
 button.quiet:hover {{ color: {p['text']}; }}
 .mode-label {{ color: {p['muted']}; font-family: {MONO}; font-size: 11px; letter-spacing: 3px; }}
 .mode-title {{ color: {p['text']}; font-family: {GROTESK}; font-size: 24px; font-weight: 500; letter-spacing: -0.3px; }}
@@ -1497,14 +1545,44 @@ def run_gui(project_arg: str | None) -> int:
         print(f"keys loaded from {S_KEYS}", file=sys.stderr)
     ensure_inter_font()
     _settings = Gtk.Settings.get_default()
-    _theme = ((_settings.get_property("gtk-theme-name") or "").lower()
-              if _settings else "")
-    _prefer_dark = (_settings.get_property("gtk-application-prefer-dark-theme")
-                    if _settings else False)
+
+    def _system_dark() -> bool:
+        if _settings is None:
+            return False
+        try:
+            name = (_settings.get_property("gtk-theme-name") or "").lower()
+            prefer = _settings.get_property(
+                "gtk-application-prefer-dark-theme")
+        except Exception:
+            return False
+        return bool(prefer) or "dark" in name
+
+    # Theme preference: a three-state cycle (auto / light / dark),
+    # persisted between runs. AAT_THEME=dark|light still wins as the
+    # initial mode (screenshots); auto follows the system theme and
+    # switches live when the system does.
+    PREFS_PATH = DATA_DIR / "ui_prefs.json"
+
+    def _load_prefs() -> dict:
+        try:
+            import json as _json
+            data = _json.loads(PREFS_PATH.read_text())
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    _prefs = _load_prefs()
     _env_theme = os.environ.get("AAT_THEME", "").lower()
-    DARK = _env_theme == "dark" or (
-        _env_theme != "light" and (_prefer_dark or "dark" in _theme))
-    PAL = PALETTES["dark" if DARK else "light"]
+    THEME = {"mode": _env_theme if _env_theme in ("dark", "light")
+             else (_prefs.get("theme_mode")
+                   if _prefs.get("theme_mode") in ("auto", "light", "dark")
+                   else "auto"),
+             "dark": False}
+    THEME["dark"] = THEME["mode"] == "dark" or (
+        THEME["mode"] == "auto" and _system_dark())
+    # PAL/PALC are mutated in place on a theme switch: every draw
+    # callback already reads them, so they all pick up new tokens.
+    PAL = dict(PALETTES["dark" if THEME["dark"] else "light"])
 
     def _rgb(v):
         if isinstance(v, str) and v.startswith("#"):
@@ -1513,10 +1591,55 @@ def run_gui(project_arg: str | None) -> int:
         return v
     PALC = {k: _rgb(v) for k, v in PAL.items()}
     provider = Gtk.CssProvider()
-    provider.load_from_data(build_css(DARK))
+    provider.load_from_data(build_css(THEME["dark"]))
     Gtk.StyleContext.add_provider_for_screen(
         Gdk.Screen.get_default(), provider,
         Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def _save_prefs():
+        try:
+            import json as _json
+            _prefs["theme_mode"] = THEME["mode"]
+            if S.get("view_mode"):
+                _prefs["view_mode"] = S["view_mode"]
+            PREFS_PATH.write_text(_json.dumps(_prefs))
+        except Exception:
+            pass
+
+    def apply_theme(mode: str | None = None):
+        """Re-skin the whole window for THEME (auto/light/dark)."""
+        if mode in ("auto", "light", "dark"):
+            THEME["mode"] = mode
+        dark = THEME["mode"] == "dark" or (
+            THEME["mode"] == "auto" and _system_dark())
+        THEME["dark"] = dark
+        PAL.clear()
+        PAL.update(PALETTES["dark" if dark else "light"])
+        PALC.clear()
+        PALC.update({k: _rgb(v) for k, v in PAL.items()})
+        provider.load_from_data(build_css(dark))
+        vte = S.get("vte")
+        if vte is not None:
+            vte.set_color_background(Gdk.RGBA(*PAL["vte_bg"], 1))
+            vte.set_color_foreground(Gdk.RGBA(*PAL["vte_fg"], 1))
+        btn = S.get("theme_btn")
+        if btn is not None:
+            btn.set_tooltip_text(
+                {"auto": "Theme: Auto (system) — click for Light",
+                 "light": "Theme: Light — click for Dark",
+                 "dark": "Theme: Dark — click for Auto"}[THEME["mode"]])
+        for widget in S.values():
+            if isinstance(widget, Gtk.Widget):
+                widget.queue_draw()
+        sq = S.get("square")
+        if sq is not None:
+            sq.queue_draw()
+        _save_prefs()
+        try:
+            core.dlog("ui", f"theme {THEME['mode']} "
+                            f"({'dark' if dark else 'light'})")
+        except Exception:
+            pass
 
     project_path = project_arg or os.environ.get("AAT_PROJECT") \
         or str(ensure_demo_project())
@@ -1564,6 +1687,11 @@ def run_gui(project_arg: str | None) -> int:
     S: dict = {"win": None, "overlay_on": False, "panel_on": False,
                "mode": "blinky", "user_closed_task": None,
                "results_shown_task": None, "layout": "overlay",
+               "view_mode": (_prefs.get("view_mode")
+                             if _prefs.get("view_mode") in (
+                                 "term_vis", "feed_vis", "term_feed")
+                             else "term_vis"),
+               "_view_manual": False,
                "left_override": None, "_agent_busy": False,
                "_busy_since": None, "_busy_end": None,
                "_busy_since_keep": None,
@@ -2333,13 +2461,11 @@ def run_gui(project_arg: str | None) -> int:
 
         header = Gtk.HeaderBar()
         header.set_show_close_button(True)
-        header.props.title = "Agent-Aware Terminal"
-        header.props.subtitle = core.project["name"] if core.project else ""
+        # No title/subtitle in the header: the project name and the
+        # agent status pill were noise (the square already says it).
         win.set_titlebar(header)
         S["header"] = header
 
-        S["pill"] = Gtk.Label(label="idle")
-        header.pack_end(S["pill"])
         # The floating square: toggles the visualization mode. It is
         # a miniature of the big square — hollow when the mode is
         # off, filled by agent activity when on, and it breathes
@@ -2353,6 +2479,20 @@ def run_gui(project_arg: str | None) -> int:
                         lambda *_: set_overlay(not S["overlay_on"]))
         header.pack_end(mode_ev)
 
+        # Theme cycle: Auto (system) -> Light -> Dark -> Auto, drawn
+        # as a half-disc / sun / moon. Borderless icon button.
+        S["theme_btn"] = Gtk.Button()
+        S["theme_btn"].get_style_context().add_class("icon-btn")
+        S["theme_btn"].set_relief(Gtk.ReliefStyle.NONE)
+        theme_glyph = Gtk.DrawingArea()
+        theme_glyph.set_size_request(18, 18)
+        theme_glyph.connect("draw", draw_theme_btn)
+        S["theme_btn"].add(theme_glyph)
+        S["theme_glyph"] = theme_glyph
+        S["theme_btn"].connect("clicked", lambda *_: cycle_theme())
+        header.pack_end(S["theme_btn"])
+        apply_theme()  # sets the tooltip for the current mode
+
         menu = Gio.Menu()
         menu.append("Open project…", "app.open-project")
         menu.append("Run Muse with a task", "app.muse-task")
@@ -2361,6 +2501,8 @@ def run_gui(project_arg: str | None) -> int:
         menu.append("Simulate events (dev)", "app.simulate")
         menu.append("Quit", "app.quit")
         menubtn = Gtk.MenuButton()
+        menubtn.get_style_context().add_class("icon-btn")
+        menubtn.set_relief(Gtk.ReliefStyle.NONE)
         menubtn.set_image(Gtk.Image.new_from_icon_name(
             "open-menu-symbolic", Gtk.IconSize.BUTTON))
         menubtn.set_menu_model(menu)
@@ -2455,12 +2597,12 @@ def run_gui(project_arg: str | None) -> int:
         S["btn_save"].connect("clicked", lambda *_: game_save_idea())
         S["btn_like"] = Gtk.Button(label="\u2665")
         S["btn_like"].set_tooltip_text("More like this")
-        S["btn_like"].get_style_context().add_class("game-next")
+        S["btn_like"].get_style_context().add_class("icon-btn")
         S["btn_like"].connect(
             "clicked", lambda *_: game_react("like"))
         S["btn_dislike"] = Gtk.Button(label="\u2715")
         S["btn_dislike"].set_tooltip_text("Less like this")
-        S["btn_dislike"].get_style_context().add_class("game-next")
+        S["btn_dislike"].get_style_context().add_class("icon-btn")
         S["btn_dislike"].connect(
             "clicked", lambda *_: game_react("dislike"))
         fb_row.pack_end(S["game_next"], False, False, 0)
@@ -2472,7 +2614,7 @@ def run_gui(project_arg: str | None) -> int:
         S["btn_idea"] = Gtk.Button()
         S["btn_idea"].set_tooltip_text(
             "Pick what content to generate next")
-        S["btn_idea"].get_style_context().add_class("feed-action")
+        S["btn_idea"].get_style_context().add_class("icon-btn")
         bulb = Gtk.DrawingArea()
         bulb.set_size_request(16, 16)
         bulb.connect("draw", draw_bulb)
@@ -2481,6 +2623,8 @@ def run_gui(project_arg: str | None) -> int:
                               lambda *_: idea_pick_type())
         top_row.pack_end(S["btn_idea"], False, False, 0)
         S["game_box"] = game_box
+        S["content_box"] = content
+        S["content_top_row"] = top_row
         game_scroll = Gtk.ScrolledWindow()
         game_scroll.set_policy(Gtk.PolicyType.NEVER,
                                Gtk.PolicyType.AUTOMATIC)
@@ -2521,23 +2665,27 @@ def run_gui(project_arg: str | None) -> int:
         atop.set_margin_top(14)
         atop.set_margin_start(20)
         atop.set_margin_end(20)
-        lbl_proj = Gtk.Label(label=core.project["name"] if core.project else "project")
-        lbl_proj.get_style_context().add_class("ov-project")
-        lbl_proj.set_xalign(0)
-        S["mode_agent"] = Gtk.Label(label="AGENT")
-        S["mode_agent"].get_style_context().add_class("mode-agent")
-        titlebox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        titlebox.pack_start(lbl_proj, False, False, 0)
-        titlebox.pack_start(S["mode_agent"], False, False, 0)
-        atop.pack_start(titlebox, False, False, 0)
+        S["scene_top_row"] = atop
         btn_more = Gtk.Button(label="···")
         btn_more.get_style_context().add_class("quiet")
         btn_more.connect("clicked", lambda *_: toggle_panel(True))
         atop.pack_end(btn_more, False, False, 8)
-        btn_return = Gtk.Button(label="Feed")
-        btn_return.get_style_context().add_class("term-return")
-        btn_return.connect("clicked", lambda *_: show_content())
-        atop.pack_end(btn_return, False, False, 0)
+        # View cycle (replaces the old Feed button): a borderless
+        # icon showing the current two-pane pairing. Clicks cycle
+        # Terminal+Visualisation -> Feed+Visualisation ->
+        # Terminal+Feed -> back. In the Terminal+Feed pairing the
+        # button moves to the top of the Feed pane (apply_view), so
+        # it is always on the right pane and always reachable.
+        S["view_btn"] = Gtk.Button()
+        S["view_btn"].get_style_context().add_class("icon-btn")
+        S["view_btn"].set_relief(Gtk.ReliefStyle.NONE)
+        view_glyph = Gtk.DrawingArea()
+        view_glyph.set_size_request(28, 20)
+        view_glyph.connect("draw", draw_view_btn)
+        S["view_btn"].add(view_glyph)
+        S["view_glyph"] = view_glyph
+        S["view_btn"].connect("clicked", lambda *_: cycle_view())
+        atop.pack_end(S["view_btn"], False, False, 0)
         scene.pack_start(atop, False, False, 0)
 
         S["sys1_banner"] = Gtk.Label(label="")
@@ -2682,11 +2830,10 @@ def run_gui(project_arg: str | None) -> int:
                 except ValueError:
                     _tour_secs = 6
             set_overlay(True)
-            S["left_override"] = "content"
+            set_view("feed_vis")
             if _tour_secs:
                 def _tour_tick():
-                    if S["left_stack"].get_visible_child_name() \
-                            == "content":
+                    if _content_visible():
                         cur = S["game_ctl"].get("game") or {}
                         # Facts, news and ideas are reading
                         # content: they change only when the
@@ -2711,8 +2858,7 @@ def run_gui(project_arg: str | None) -> int:
             if S["overlay_on"] and game \
                     and ((game.get("scene") or {}).get("anim")
                          or game.get("_paint") or verdict_live) \
-                    and S["left_stack"].get_visible_child_name() \
-                    == "content":
+                    and _content_visible():
                 S["game_scene"].queue_draw()
             return True
         S["game_scene"].add_tick_callback(_anim_frame, None)
@@ -2801,27 +2947,143 @@ def run_gui(project_arg: str | None) -> int:
             cr.fill()
         return False
 
+    # ---------------- theme & view cycle buttons ----------------
+    THEME_CYCLE = ("auto", "light", "dark")
+    VIEW_CYCLE = ("term_vis", "feed_vis", "term_feed")
+    VIEW_LABELS = {
+        "term_vis": "Terminal + visualisation",
+        "feed_vis": "Feed + visualisation",
+        "term_feed": "Terminal + Feed",
+    }
+
+    def cycle_theme():
+        nxt = THEME_CYCLE[(THEME_CYCLE.index(THEME["mode"]) + 1)
+                          % len(THEME_CYCLE)]
+        apply_theme(nxt)
+
+    def draw_theme_btn(area, cr):
+        import math
+        w, h = area.get_allocated_width(), area.get_allocated_height()
+        cx, cy = w / 2, h / 2
+        r = max(min(w, h) / 2 - 2.5, 4)
+        cr.set_source_rgba(*PALC["text"], 0.95)
+        cr.set_line_width(1.4)
+        if THEME["mode"] == "light":  # sun: disc + rays
+            cr.arc(cx, cy, r * 0.52, 0, 2 * math.pi)
+            cr.stroke()
+            for i in range(8):
+                a = i * math.pi / 4
+                cr.move_to(cx + math.cos(a) * r * 0.72,
+                           cy + math.sin(a) * r * 0.72)
+                cr.line_to(cx + math.cos(a) * r * 0.98,
+                           cy + math.sin(a) * r * 0.98)
+                cr.stroke()
+        elif THEME["mode"] == "dark":  # moon: disc minus offset disc
+            cr.arc(cx, cy, r * 0.82, 0, 2 * math.pi)
+            cr.fill()
+            cr.set_source_rgba(*PALC["bg"], 1)
+            cr.arc(cx + r * 0.42, cy - r * 0.28, r * 0.68, 0, 2 * math.pi)
+            cr.fill()
+        else:  # auto: half-filled disc (system decides the halves)
+            cr.arc(cx, cy, r * 0.78, -math.pi / 2, math.pi / 2)
+            cr.close_path()
+            cr.fill()
+            cr.arc(cx, cy, r * 0.78, 0, 2 * math.pi)
+            cr.stroke()
+        return False
+
+    def draw_view_btn(area, cr):
+        import math
+        w, h = area.get_allocated_width(), area.get_allocated_height()
+        bw, bh = max(w - 6, 12), max(h - 4, 10)
+        x, y = (w - bw) / 2, (h - bh) / 2
+        mid = x + bw / 2
+        kinds = {"term_vis": ("term", "vis"),
+                 "feed_vis": ("feed", "vis"),
+                 "term_feed": ("term", "feed")}[S["view_mode"]]
+
+        def rr(px, py, pw, ph, rad):
+            cr.new_path()
+            cr.arc(px + pw - rad, py + rad, rad, -1.5708, 0)
+            cr.arc(px + pw - rad, py + ph - rad, rad, 0, 1.5708)
+            cr.arc(px + rad, py + ph - rad, rad, 1.5708, 3.1416)
+            cr.arc(px + rad, py + rad, rad, 3.1416, 4.7124)
+            cr.close_path()
+
+        def glyph(kind, cx, cy):
+            cr.set_source_rgba(*PALC["text"], 0.95)
+            if kind == "vis":  # the agent square
+                s = min(bw, bh) * 0.30
+                rr(cx - s / 2, cy - s / 2, s, s, 1.5)
+                cr.fill()
+            elif kind == "feed":  # content lines
+                cr.set_line_width(1.3)
+                for i, frac in enumerate((0.95, 0.75, 0.55)):
+                    ly = cy - 3.4 + i * 3.4
+                    cr.move_to(cx - bw * 0.17, ly)
+                    cr.line_to(cx - bw * 0.17 + bw * 0.34 * frac, ly)
+                    cr.stroke()
+            else:  # terminal prompt: >_
+                cr.set_line_width(1.3)
+                cr.move_to(cx - bw * 0.16, cy - 3.2)
+                cr.line_to(cx - bw * 0.05, cy)
+                cr.line_to(cx - bw * 0.16, cy + 3.2)
+                cr.stroke()
+                cr.move_to(cx + bw * 0.01, cy + 3.4)
+                cr.line_to(cx + bw * 0.17, cy + 3.4)
+                cr.stroke()
+
+        rr(x, y, bw, bh, 3)
+        cr.set_source_rgba(*PALC["text"], 0.75)
+        cr.set_line_width(1.1)
+        cr.stroke()
+        cr.move_to(mid, y + 2)
+        cr.line_to(mid, y + bh - 2)
+        cr.stroke()
+        glyph(kinds[0], x + bw / 4, y + bh / 2)
+        glyph(kinds[1], x + 3 * bw / 4, y + bh / 2)
+        return False
+
     # ---------------- companion content (games) ----------------
     def _content_context():
         task = (core.agent_state or {}).get("task") or ""
-        key = (project_path, task)
+        cwd = (core.snapshot or {}).get("cwd") or ""
+        root = project_path
+        if cwd and cwd != project_path and Path(cwd).is_dir():
+            # The terminal may have wandered into another
+            # project (~/dev/yue2 while the app was launched
+            # elsewhere): context must follow the user.
+            probe = Path(cwd)
+            for _ in range(4):
+                if (probe / ".git").exists():
+                    break
+                if probe.parent == probe:
+                    break
+                probe = probe.parent
+            root = str(probe)
+        key = (root, task)
         if S.get("_ctx_key") != key:
             domains = ""
             try:
                 from backend.app import content_researcher as _cr2
-                prof = _cr2.profile_project(project_path, task)
+                prof = _cr2.profile_project(root, task)
                 domains = ", ".join(
                     f"{d['label']} ({', '.join(d['evidence'][:4])})"
                     for d in prof.get("domains", [])[:2])
             except Exception:
                 pass
-            name = (core.project or {}).get("name") or \
-                Path(project_path).name
-            S["_ctx_text"] = (f"Project: {name}. Domain: "
+            name = (core.project or {}).get("name") \
+                if root == project_path else Path(root).name
+            S["_ctx_base"] = (f"Project: {name}. Domain: "
                               f"{domains or 'general software'}. "
                               f"Current task: {task or 'coding'}")
             S["_ctx_key"] = key
-        return S["_ctx_text"]
+        tail = getattr(core, "_screen_tail", "") or ""
+        lines = [ln.strip() for ln in tail.splitlines()
+                 if ln.strip()]
+        excerpt = " ".join(lines[-4:])[:400]
+        return S["_ctx_base"] + (
+            f" On screen: {excerpt}" if excerpt else "")
 
     def _close_previous_serve():
         ctl = S["game_ctl"]
@@ -3112,27 +3374,133 @@ def run_gui(project_arg: str | None) -> int:
             game_answer(target)
         return False
 
+    def _content_visible() -> bool:
+        # Actual widget placement, not the requested mode: on the
+        # first entry into term_feed the content box is not yet in
+        # the right pane, and it must still count as "not shown" so
+        # a game gets served.
+        if S["content_box"].get_parent() is S["paned"]:
+            return True
+        return bool(S["overlay_on"]
+                    and S["left_stack"].get_visible_child_name()
+                    == "content")
+
+    def _maybe_serve():
+        ctl = S["game_ctl"]
+        if ctl["game"] is None or ctl["answered"]:
+            serve_game(True)
+
+    def _half_position():
+        return max(S["win"].get_size()[0] // 2, 200)
+
+    def _place_content_left():
+        content = S["content_box"]
+        if content.get_parent() is not S["left_stack"]:
+            if content.get_parent() is not None:
+                content.get_parent().remove(content)
+            S["left_stack"].add_named(content, "content")
+
+    def _place_content_right():
+        content = S["content_box"]
+        if content.get_parent() is not S["paned"]:
+            if content.get_parent() is not None:
+                content.get_parent().remove(content)
+            S["paned"].pack2(content, True, False)
+            S["paned"].set_position(_half_position())
+
+    def _place_scene_right():
+        scene = S["scene"]
+        if scene.get_parent() is not S["paned"]:
+            if scene.get_parent() is not None:
+                scene.get_parent().remove(scene)
+            S["paned"].pack2(scene, True, False)
+            S["paned"].set_position(_half_position())
+        scene.set_visible(True)
+
+    def _move_view_btn(to_feed: bool):
+        btn = S["view_btn"]
+        slot = S["content_top_row"] if to_feed else S["scene_top_row"]
+        if btn.get_parent() is not slot:
+            if btn.get_parent() is not None:
+                btn.get_parent().remove(btn)
+            slot.pack_end(btn, False, False, 0)
+        nxt = VIEW_CYCLE[(VIEW_CYCLE.index(S["view_mode"]) + 1)
+                         % len(VIEW_CYCLE)]
+        btn.set_tooltip_text(
+            f"View: {VIEW_LABELS[S['view_mode']]} — click for "
+            f"{VIEW_LABELS[nxt]}")
+
+    def apply_view():
+        """Place the two panes for S['view_mode'].
+
+        term_vis / feed_vis: the visualisation pane is on the right,
+        the terminal or the Feed on the left. term_feed: terminal on
+        the left, Feed on the right, no visualisation pane — and the
+        view button moves onto the Feed pane so the cycle can always
+        be continued."""
+        mode = S["view_mode"]
+        was_content = _content_visible()
+        scene = S["scene"]
+        if mode == "term_feed":
+            if scene.get_parent() is S["paned"]:
+                S["paned"].remove(scene)
+            scene.set_visible(False)
+            S["square"].stop()
+            _place_content_right()
+            S["left_stack"].set_visible_child_name("terminal")
+            _move_view_btn(True)
+        else:
+            _place_content_left()
+            _place_scene_right()
+            S["square"].start()
+            target = "content" if mode == "feed_vis" else "terminal"
+            if S["left_stack"].get_visible_child_name() != target:
+                S["left_stack"].set_visible_child_name(target)
+            _move_view_btn(False)
+        if _content_visible() and not was_content:
+            _maybe_serve()
+        if S.get("_view_logged") != mode:
+            S["_view_logged"] = mode
+            core.dlog("ui", f"view -> {mode} ({VIEW_LABELS[mode]})")
+        if S.get("view_btn") is not None:
+            S["view_btn"].queue_draw()
+        S["mode_btn"].queue_draw()
+
+    def set_view(mode: str, manual: bool = True):
+        if mode not in VIEW_CYCLE:
+            return
+        S["view_mode"] = mode
+        if manual:
+            S["_view_manual"] = True
+            S["left_override"] = "content" if mode == "feed_vis" \
+                else "terminal"
+        _save_prefs()
+        if not S["overlay_on"]:
+            set_overlay(True)
+        else:
+            apply_view()
+
+    def cycle_view():
+        """The view icon: cycle the two-pane pairing, like the
+        theme icon cycles auto -> light -> dark."""
+        nxt = VIEW_CYCLE[(VIEW_CYCLE.index(S["view_mode"]) + 1)
+                         % len(VIEW_CYCLE)]
+        set_view(nxt)
+
     def set_overlay(show: bool):
-        """Visualization mode on/off. On: the status pane (right)
-        joins the layout; the left pane is chosen automatically.
-        Off: a plain terminal, like any other."""
+        """Split mode on/off. On: two panes in the chosen view
+        pairing (apply_view). Off: a plain terminal, like any other."""
         S["overlay_on"] = show
         scene = S["scene"]
-        paned = S["paned"]
         if show:
-            if scene.get_parent() is not paned:
-                if scene.get_parent() is not None:
-                    scene.get_parent().remove(scene)
-                paned.pack2(scene, True, False)
-                paned.set_position(
-                    max(S["win"].get_size()[0] // 2, 200))
-            scene.set_visible(True)
-            S["square"].start()
-            apply_left()
+            apply_view()
             tick()
         else:
-            if scene.get_parent() is paned:
-                paned.remove(scene)
+            if scene.get_parent() is S["paned"]:
+                S["paned"].remove(scene)
+            scene.set_visible(False)
+            _place_content_left()
+            _move_view_btn(False)
             S["left_stack"].set_visible_child_name("terminal")
             S["square"].stop()
             S["vte"].grab_focus()
@@ -3146,7 +3514,7 @@ def run_gui(project_arg: str | None) -> int:
         set_overlay(mode != "off")
 
     def current_left_target() -> str:
-        if not S["overlay_on"]:
+        if not S["overlay_on"] or S["view_mode"] == "term_feed":
             return "terminal"
         if S.get("left_override"):
             return S["left_override"]
@@ -3158,34 +3526,40 @@ def run_gui(project_arg: str | None) -> int:
         return "terminal"
 
     def apply_left():
+        if S["view_mode"] == "term_feed":
+            if S["left_stack"].get_visible_child_name() != "terminal":
+                S["left_stack"].set_visible_child_name("terminal")
+            return
         target = current_left_target()
         if S["left_stack"].get_visible_child_name() != target:
             S["left_stack"].set_visible_child_name(target)
+            # Keep the view icon in sync with what is on screen.
+            S["view_mode"] = "feed_vis" if target == "content" \
+                else "term_vis"
             core.dlog("ui", f"left -> {target} "
                             f"({'manual' if S.get('left_override') else 'auto'})")
             if target == "terminal":
                 S["vte"].grab_focus()
             elif target == "content":
-                ctl = S["game_ctl"]
-                if ctl["game"] is None or ctl["answered"]:
-                    serve_game(True)
+                _maybe_serve()
+            _move_view_btn(False)  # syncs tooltip + redraws the icon
         S["mode_btn"].queue_draw()
 
     def toggle_left():
         """Clicking the square swaps the left pane by hand. The
         manual choice lasts until the agent changes phase."""
-        cur = S["left_stack"].get_visible_child_name()
-        S["left_override"] = "terminal" if cur == "content" else "content"
-        apply_left()
+        if S["view_mode"] == "term_feed":
+            set_view("term_vis")
+        else:
+            set_view("term_vis" if S["view_mode"] == "feed_vis"
+                     else "feed_vis")
 
     def show_terminal():
-        S["left_override"] = "terminal"
-        apply_left()
+        set_view("term_vis")
 
     def show_content():
-        """The Feed button: bring the companion content forward."""
-        S["left_override"] = "content"
-        apply_left()
+        """Bring the companion content forward (Feed + visualisation)."""
+        set_view("feed_vis")
 
     def user_close():
         """The user explicitly leaves the overlay: never auto-reopen
@@ -3221,8 +3595,7 @@ def run_gui(project_arg: str | None) -> int:
                 S["_fullscreen"] = False
             elif S["panel_on"]:
                 toggle_panel(False)
-            elif S["overlay_on"] and \
-                    S["left_stack"].get_visible_child_name() == "content":
+            elif S["overlay_on"] and _content_visible():
                 show_terminal()
             elif S["overlay_on"]:
                 user_close()
@@ -3238,8 +3611,6 @@ def run_gui(project_arg: str | None) -> int:
         if dlg.run() == Gtk.ResponseType.OK:
             path = dlg.get_filename()
             core.reindex(path)
-            S["header"].props.subtitle = \
-                core.project["name"] if core.project else ""
             S["vte"].feed_child(f"cd {path}\n".encode())
         dlg.destroy()
 
@@ -3418,9 +3789,12 @@ def run_gui(project_arg: str | None) -> int:
 
     def tick():
         agent, _comp = display_state()
-        S["pill"].set_text(f"● {agent.get('agent') or 'agent'} · {agent.get('state')}")
         if S.get("mode_btn"):
             S["mode_btn"].queue_draw()
+        # Auto theme follows the system live (checked on this timer;
+        # cheap property reads, no GTK settings signal wiring).
+        if THEME["mode"] == "auto" and _system_dark() != THEME["dark"]:
+            apply_theme()
         chk = core.liquid_check
         if chk["status"] == "ok":
             S["sys1_banner"].hide()
@@ -3520,6 +3894,12 @@ def run_gui(project_arg: str | None) -> int:
                 if not resumed:
                     S["_busy_since"] = time.time()
                     S["left_override"] = None  # new phase: auto
+                    S["_view_manual"] = False
+                    if S["view_mode"] == "term_feed":
+                        # A manual Terminal+Feed pairing also ends
+                        # with the phase: back to the visualisation.
+                        S["view_mode"] = "term_vis"
+                        apply_view()
                 S["_agent_busy"] = True
             elif not busy_now and S.get("_agent_busy"):
                 S["_agent_busy"] = False
@@ -3549,8 +3929,6 @@ def run_gui(project_arg: str | None) -> int:
                 # For adapter-less agents the console text is the
                 # most honest activity line we have.
                 S["mode_sub"].set_text(short(scr.splitlines()[-1], 90))
-            S["mode_agent"].set_text(
-                (agent.get("agent") or "NO AGENT").upper())
             S["hint"].set_text(
                 "Click the square to return to the terminal"
                 if mode == "shuffle"
