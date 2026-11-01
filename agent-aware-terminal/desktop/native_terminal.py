@@ -5338,6 +5338,14 @@ def run_gui(project_arg: str | None) -> int:
 
 
 def main():
+    if os.environ.get("AAT_EMBED_WORKER"):
+        # Frozen re-entry: this process is the embedding worker
+        # (onnxruntime is crash-isolated outside the GUI).
+        sys.path.insert(0, os.path.dirname(RES_ROOT)
+                        if isinstance(RES_ROOT, str) else "")
+        from backend.app.embeddings import run_worker
+        run_worker(sys.stdin, sys.stdout)
+        return 0
     args = sys.argv[1:]
     project = None
     if "--project" in args:

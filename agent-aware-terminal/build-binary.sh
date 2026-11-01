@@ -9,7 +9,7 @@ if [ ! -d .venv-build ]; then
   # --system-site-packages: PyGObject (Gtk/Vte typelibs) is a system
   # package on Ubuntu and is what the native window is built on.
   python3 -m venv --system-site-packages .venv-build
-  .venv-build/bin/pip install -q pyinstaller requests
+  .venv-build/bin/pip install -q pyinstaller requests pycairo
 fi
 # Local embedding runtime (optional at runtime: hashing fallback
 # covers its absence, but the binary should carry it).

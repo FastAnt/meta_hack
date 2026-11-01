@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
+import sys
 import re
 import struct
 import threading
@@ -223,13 +225,105 @@ class GemmaEmbedder:
         return out
 
 
+def run_worker(stdin, stdout) -> None:
+    """Embedding worker loop: JSON lines in, JSON lines out.
+    Runs in a child process so a native onnxruntime abort
+    (observed: C++ terminate inside a Split kernel) can never
+    take the terminal down with it."""
+    import json as _json
+    impl = None
+    for line in stdin:
+        try:
+            req = _json.loads(line)
+            if impl is None:
+                impl = GemmaEmbedder(
+                    Path(req["model_dir"]))
+            vecs = impl.embed(req["texts"], req.get("kind", "doc"))
+            stdout.write(_json.dumps({"vectors": vecs}) + "\n")
+        except Exception as exc:
+            try:
+                stdout.write(_json.dumps(
+                    {"error": f"{type(exc).__name__}: {exc}"}) + "\n")
+            except Exception:
+                return
+        stdout.flush()
+
+
+class SubprocessGemmaEmbedder:
+    """Gemma behind a process boundary. Any worker failure —
+    including a hard native abort the parent cannot even see
+    as an exception — degrades to the hashing baseline for the
+    rest of the session instead of killing the app."""
+
+    model_id = MODEL_GEMMA
+    dim = OUTPUT_DIM
+
+    def __init__(self, model_dir: Path):
+        self.model_dir = Path(model_dir)
+        self._proc = None
+        self._fallback = None
+        self._lock = threading.Lock()
+
+    def ready(self) -> bool:
+        return self._fallback is None
+
+    def _spawn(self):
+        import subprocess
+        import sys as _sys
+        env = dict(os.environ)
+        env["AAT_EMBED_WORKER"] = "1"
+        if getattr(_sys, "frozen", False):
+            cmd = [_sys.executable]
+        else:
+            cmd = [_sys.executable,
+                   str(Path(__file__).with_name("embed_worker.py"))]
+        self._proc = subprocess.Popen(
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, env=env, text=True)
+
+    def _degrade(self, why: str):
+        if self._fallback is None:
+            print(f"[embeddings] worker lost ({why}); "
+                  "hashing baseline takes over", file=sys.stderr)
+        self._fallback = HashingEmbedder()
+        if self._proc is not None:
+            try:
+                self._proc.kill()
+            except Exception:
+                pass
+            self._proc = None
+
+    def embed(self, texts, kind="doc"):
+        if self._fallback is not None:
+            return self._fallback.embed(texts, kind)
+        import json as _json
+        with self._lock:
+            try:
+                if self._proc is None or self._proc.poll() is not None:
+                    self._spawn()
+                self._proc.stdin.write(_json.dumps({
+                    "model_dir": str(self.model_dir),
+                    "texts": list(texts), "kind": kind}) + "\n")
+                self._proc.stdin.flush()
+                line = self._proc.stdout.readline()
+                if not line:
+                    raise RuntimeError("worker closed the pipe")
+                resp = _json.loads(line)
+                if "error" in resp:
+                    raise RuntimeError(resp["error"])
+                return resp["vectors"]
+            except Exception as exc:
+                self._degrade(str(exc)[:100])
+                return self._fallback.embed(texts, kind)
+
+
 def make_embedder(data_dir: Path):
     """EmbeddingGemma-2 when its runtime is importable, else
     the hashing baseline. Model download/load is lazy."""
     try:
         import onnxruntime  # noqa: F401
         import tokenizers  # noqa: F401
-        return GemmaEmbedder(
+        return SubprocessGemmaEmbedder(
             Path(data_dir) / "models" / "embeddinggemma2")
     except Exception:
         return HashingEmbedder()
