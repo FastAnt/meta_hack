@@ -245,6 +245,22 @@ and project-imagery experiments in the backend. They are not
 part of the current UI (principle 1/2); keep them working but
 do not surface generated imagery in the pane.
 
+## Perception: two layers, one truth
+
+State comes from a deterministic skeleton only: an agent
+counts when it lives in this terminal's process tree (or its
+log adapter is anchored to one); a turn opens on process work
+and closes on process edges or measured screen quiet (the
+screen text stopped changing); file counts are baseline
+diffs; scores are System-1 judgments over those facts. The
+model's screen/activity verdicts are *flavor*: they pick the
+animation inside an open turn and may flip freely — they can
+never open or close a turn, arm DONE, or move the panes, and
+they are not consulted at all when no known agent is present.
+(This replaced a pile of compensating heuristics — marker
+vetoes, vote counting, display hysteresis, transcript regexes
+— whose compositions kept producing phantom states.)
+
 ## On-disk data
 
 | Location | Contents |
@@ -261,7 +277,7 @@ do not surface generated imagery in the pane.
 `AAT_TOUR_TYPE=game|fact|news|idea`, `AAT_MOCKSTATE=<mode>`,
 `AAT_SIM_FILE`, `AAT_OPEN_OVERLAY=1`, `AAT_APP_ID` (unique id
 for parallel test instances — the app is single-instance),
-`AAT_CREATOR_PROVIDER=muse|codex|kilo|llm|custom` (who creates project content; default muse; `llm` = the app's built-in harness over `AAT_CREATOR_LLM_BASE_URL` + `AAT_CREATOR_LLM_API_KEY` + `AAT_CREATOR_LLM_MODEL`, any OpenAI-compatible endpoint), `AAT_AGENT_PROCS` (extra terminal-agent process names to recognize, beyond muse/codex/claude/kilo), `AAT_CREATOR_MODEL`, `AAT_CREATOR_CODEX_SANDBOX` (workspace-write default; `bypass` where Codex's own sandbox cannot start) (model id for muse/codex), `AAT_CREATOR_CMD` (full command for provider=custom — any agent CLI that takes the mission as its last argument, e.g. a DeepSeek runner; setting it alone also selects custom), `AAT_CREATOR=off` (never spawn the creator), `AAT_KEYS_FILE`, `LIQUID_MODEL`, `AAT_TURN_END_CONFIRM_S` (seconds a non-work screen verdict must persist before a screen-driven turn counts as ended; default 4), plus keys from `keys.sh`.
+`AAT_CREATOR_PROVIDER=muse|codex|kilo|llm|custom` (who creates project content; default muse; `llm` = the app's built-in harness over `AAT_CREATOR_LLM_BASE_URL` + `AAT_CREATOR_LLM_API_KEY` + `AAT_CREATOR_LLM_MODEL`, any OpenAI-compatible endpoint), `AAT_AGENT_PROCS` (extra terminal-agent process names to recognize, beyond muse/codex/claude/kilo), `AAT_CREATOR_MODEL`, `AAT_CREATOR_CODEX_SANDBOX` (workspace-write default; `bypass` where Codex's own sandbox cannot start) (model id for muse/codex), `AAT_CREATOR_CMD` (full command for provider=custom — any agent CLI that takes the mission as its last argument, e.g. a DeepSeek runner; setting it alone also selects custom), `AAT_CREATOR=off` (never spawn the creator), `AAT_KEYS_FILE`, `LIQUID_MODEL`, `AAT_TURN_END_CONFIRM_S` (seconds of screen quiet that end a screen-driven turn; default 4), plus keys from `keys.sh`.
 
 ### Creator auto-launch
 
