@@ -51,3 +51,24 @@ class SubstanceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProjectDirTests(unittest.TestCase):
+    def test_engine_follows_project_dir(self):
+        import tempfile
+        from backend.app import content_engine as ce
+        with tempfile.TemporaryDirectory() as a, \
+                tempfile.TemporaryDirectory() as b:
+            pa = pathlib.Path(a) / ".aat" / "content"
+            pb = pathlib.Path(b) / ".aat" / "content"
+            pa.mkdir(parents=True)
+            pb.mkdir(parents=True)
+            (pb / "fact-one.json").write_text(
+                '{"id": "fact-one", "type": "fact", '
+                '"title": "T", "body": "B"}', encoding="utf-8")
+            eng = ce.ContentEngine([pa], state_path=None)
+            self.assertEqual(eng.packs, [])
+            self.assertTrue(eng.set_project_dir(pb))
+            self.assertEqual([p["id"] for p in eng.packs],
+                             ["fact-one"])
+            self.assertFalse(eng.set_project_dir(pb))

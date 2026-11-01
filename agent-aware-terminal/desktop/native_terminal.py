@@ -1932,12 +1932,24 @@ def run_gui(project_arg: str | None) -> int:
                  if pk["id"] not in engine._served]
         if fresh:
             pack = engine.pack_by_id(fresh[-1]["id"])
+            if pack is None:
+                # The deposit is real but the engine still
+                # points at another project: re-point and retry.
+                engine.set_project_dir(
+                    Path(root) / ".aat" / "content")
+                pack = engine.pack_by_id(fresh[-1]["id"])
             if pack is not None:
                 serve_game(True, force_pack=pack)
                 S["game_fb"].set_text(
                     "New project content: "
                     + pack.get("title", pack["id"]))
                 return False
+            S["game_fb"].set_text(
+                "The researcher deposited "
+                + fresh[-1]["id"]
+                + ", but it failed to load — run test_game.py "
+                  "on it.")
+            return False
         S["game_fb"].set_text(
             "The researcher finished without new content "
             "(log: .aat/research/creator.log).")
@@ -4160,8 +4172,31 @@ def run_gui(project_arg: str | None) -> int:
             f"{chr(10).join(list(core.decisions)[-8:]) or '—'}\n\n"
             f"Process tree:\n{tree or '—'}")
 
+    def _follow_project():
+        """Content follows the terminal: when the shell's
+        project changes, the project content base (engine +
+        selector) re-points at it, so deposits where the user
+        actually works are seen and served."""
+        try:
+            root = core._work_root()
+        except Exception:
+            return
+        current = getattr(engine, "project_dir", None)
+        if current is not None and \
+                Path(current) == Path(root) / ".aat" / "content":
+            return
+        if engine.set_project_dir(Path(root) / ".aat" / "content"):
+            selector.project_path = root
+            selector.project_content_dir = \
+                Path(root) / ".aat" / "content"
+            threading.Thread(target=selector.index,
+                             daemon=True).start()
+            core.dlog("content", "project content base now "
+                                 f"{root}")
+
     def tick():
         agent, _comp = display_state()
+        _follow_project()
         if S.get("_creator_proc") is not None \
                 and not S["game_ctl"].get("answered"):
             frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"

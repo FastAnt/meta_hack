@@ -490,6 +490,10 @@ class ContentEngine:
                 self._last = saved.get("last")
             except Exception:
                 pass
+        self.project_dir = next(
+            (d for d in self.dirs
+             if d.name == "content" and d.parent.name == ".aat"),
+            None)
         self.reload()
 
     def _dir_signature(self):
@@ -516,6 +520,23 @@ class ContentEngine:
         self._served = [i for i in self._served if i in ids]
         if self._current and self._current["id"] not in ids:
             self._current = None
+
+    def set_project_dir(self, new_dir) -> bool:
+        """Re-point the project content directory (the terminal
+        wandered into another project). The project dir is the
+        tracked `project_dir` entry of `dirs`; swapping it and
+        reloading makes the new project's packs first-class."""
+        new_dir = Path(new_dir)
+        old = getattr(self, "project_dir", None)
+        if old is not None and Path(old) == new_dir:
+            return False
+        if old is not None and Path(old) in self.dirs:
+            self.dirs[self.dirs.index(Path(old))] = new_dir
+        else:
+            self.dirs.insert(0, new_dir)
+        self.project_dir = new_dir
+        self.reload()
+        return True
 
     def maybe_reload(self):
         if self._dir_signature() != self._signature:
