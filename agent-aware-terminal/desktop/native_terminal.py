@@ -1526,8 +1526,14 @@ def run_gui(project_arg: str | None) -> int:
     # Project-correlated content from the Content Researcher
     # agent lives in <project>/.aat/content and wins first.
     _content_dirs.insert(0, Path(project_path) / ".aat" / "content")
+    # Tour/preview mode sandboxes the statistics: the deck and
+    # score live in memory only, nothing is written to the real
+    # content_state.json.
+    _tour_raw = os.environ.get("AAT_TOUR", "")
     engine = ContentEngine(
-        _content_dirs, state_path=DATA_DIR / "content_state.json")
+        _content_dirs,
+        state_path=None if _tour_raw
+        else DATA_DIR / "content_state.json")
     core.dlog("content", f"{len(engine.packs)} content packs loaded"
               + (f"; pack errors: {'; '.join(engine.errors[:2])}"
                  if engine.errors else ""))
@@ -2639,22 +2645,27 @@ def run_gui(project_arg: str | None) -> int:
         # the next game on an interval — the whole deck, one by
         # one, at real size with live animation. Pauses while
         # the user looks at the terminal.
-        _tour_raw = os.environ.get("AAT_TOUR", "")
         if _tour_raw:
-            try:
-                _tour_secs = max(2, int(_tour_raw))
-            except ValueError:
-                _tour_secs = 6
+            _tour_manual = _tour_raw in ("manual", "0", "play")
+            _tour_secs = None
+            if not _tour_manual:
+                try:
+                    _tour_secs = max(2, int(_tour_raw))
+                except ValueError:
+                    _tour_secs = 6
             set_overlay(True)
             S["left_override"] = "content"
-
-            def _tour_tick():
-                if S["left_stack"].get_visible_child_name() \
-                        == "content":
-                    serve_game(True)
-                return True
-            GLib.timeout_add_seconds(_tour_secs, _tour_tick)
-            core.dlog("ui", f"game tour on ({_tour_secs}s per game)")
+            if _tour_secs:
+                def _tour_tick():
+                    if S["left_stack"].get_visible_child_name() \
+                            == "content":
+                        serve_game(True)
+                    return True
+                GLib.timeout_add_seconds(_tour_secs, _tour_tick)
+            core.dlog("ui", "game tour on ("
+                      + (f"{_tour_secs}s per game" if _tour_secs
+                         else "manual Next")
+                      + "; statistics sandboxed)")
 
         def _anim_tick():
             game = S["game_ctl"].get("game")
