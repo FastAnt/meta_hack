@@ -236,7 +236,19 @@ do not surface generated imagery in the pane.
 `AAT_TOUR_TYPE=game|fact|news|idea`, `AAT_MOCKSTATE=<mode>`,
 `AAT_SIM_FILE`, `AAT_OPEN_OVERLAY=1`, `AAT_APP_ID` (unique id
 for parallel test instances — the app is single-instance),
-`AAT_KEYS_FILE`, `LIQUID_MODEL`, `AAT_TURN_END_CONFIRM_S` (seconds a non-work screen verdict must persist before a screen-driven turn counts as ended; default 4), plus keys from `keys.sh`.
+`AAT_CREATOR_CMD` (creator agent command — the app spawns it for project content; default `muse exec --yolo`), `AAT_CREATOR=off` (never spawn the creator), `AAT_KEYS_FILE`, `LIQUID_MODEL`, `AAT_TURN_END_CONFIRM_S` (seconds a non-work screen verdict must persist before a screen-driven turn counts as ended; default 4), plus keys from `keys.sh`.
+
+### Creator auto-launch
+
+The app can start the researcher itself. The bulb button
+picks a content type, shows a spinner in the pane, and spawns
+the configured creator with a bounded one-item mission
+(researcher skill, real project, write only inside `.aat/`);
+the deposited pack is served the moment the agent exits.
+Opening a project with an empty `.aat/content` gets the same
+treatment once (7-day marker) when a deterministic substance
+gate plus a System-1 worth vote both pass. The generic
+catalogue is filler for waits with no project pack yet.
 
 ## Development workflow
 
