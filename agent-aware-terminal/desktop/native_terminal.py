@@ -535,6 +535,39 @@ class Core:
     # before a screen-driven turn counts as ended.
     TURN_END_CONFIRM_S = float(
         os.environ.get("AAT_TURN_END_CONFIRM_S", "4"))
+    # Perception schedule: a screenshot/classify call fires only
+    # after the screen changed and settled this long; a screen
+    # that keeps changing stretches at most MAX_WAIT; exactly
+    # one trailing call follows each fired call.
+    CLASSIFY_DEBOUNCE_S = 4.0
+    CLASSIFY_MAX_WAIT_S = 14.0
+
+    def _classify_due(self, now: float, screen: str) -> bool:
+        """Event-driven perception schedule. Static screens
+        cost zero calls — calls exist because the terminal
+        changed, not because a timer elapsed."""
+        h = hash((screen or "")[-1500:])
+        if h != getattr(self, "_cls_hash", None):
+            self._cls_hash = h
+            if not getattr(self, "_cls_dirty", False):
+                self._cls_pending_since = now
+            self._cls_dirty = True
+            self._cls_changed_at = now
+        if getattr(self, "_cls_dirty", False):
+            if now - self._cls_changed_at \
+                    >= self.CLASSIFY_DEBOUNCE_S or \
+                    now - getattr(self, "_cls_pending_since", now) \
+                    >= self.CLASSIFY_MAX_WAIT_S:
+                self._cls_dirty = False
+                self._cls_trail = True
+                return True
+            return False
+        if getattr(self, "_cls_trail", False) and \
+                now - getattr(self, "_screen_at", 0) \
+                >= self.CLASSIFY_DEBOUNCE_S:
+            self._cls_trail = False
+            return True
+        return False
 
     def _screen_turn_tick(self, agent_name, choice, conf):
         """A screen verdict's only state powers: OPEN a turn on
@@ -667,10 +700,18 @@ class Core:
             if self._classifying:
                 return
             now = time.time()
-            if now - getattr(self, "_screen_at", 0) < 4:
+            if not self._classify_due(now, screen):
                 return
             self._screen_at = now
             self._classifying = True
+            if callable(image):
+                # Captured lazily, on this (GUI) thread, exactly
+                # when a call fires — never on a timer.
+                try:
+                    image = image()
+                except Exception:
+                    image = ""
+            
 
             def _ask_screen():
                 self.liquid_stats["screen_calls"] += 1
@@ -5101,6 +5142,37 @@ def run_gui(project_arg: str | None) -> int:
             core.dlog("content", "project content base now "
                                  f"{root}")
 
+    def _capture_screen_image(text):
+        """A screenshot of the TERMINAL part only (never the
+        whole window/screen): the real widget pixels when the
+        terminal pane is mapped, otherwise a rendered text
+        frame — the VTE grid exists off-screen, so collapsed /
+        content-covered / minimized states still get read."""
+        try:
+            if S["left_stack"].get_visible_child_name() == "terminal":
+                win = S["vte"].get_window()
+                al = S["vte"].get_allocation()
+                if win is not None and al.width > 10:
+                    pb = Gdk.pixbuf_get_from_window(
+                        win, 0, 0, al.width, al.height)
+                    if pb is not None:
+                        wd = pb.get_width()
+                        if wd > 1100:
+                            pb = pb.scale_simple(
+                                1100, max(1, pb.get_height()
+                                          * 1100 // wd),
+                                GdkPixbuf.InterpType.BILINEAR)
+                        ok, buf = pb.save_to_bufferv(
+                            "jpeg", ["quality"], ["72"])
+                        if ok:
+                            import base64 as _b64
+                            return ("data:image/jpeg;base64,"
+                                    + _b64.b64encode(
+                                        bytes(buf)).decode())
+        except Exception:
+            pass
+        return _render_screen_image(text)
+
     def tick():
         agent, _comp = display_state()
         _follow_project()
@@ -5185,42 +5257,9 @@ def run_gui(project_arg: str | None) -> int:
                     if nm:
                         ca = {"agent": nm, "state": "idle",
                               "source": "heuristic"}
-                img = ""
-                if ca.get("agent") and \
-                        time.time() - S.get("_img_at", 0) >= 4:
-                    S["_img_at"] = time.time()
-                    img = S.get("_img_uri", "")
-                    try:
-                        visible = S["left_stack"] \
-                            .get_visible_child_name() == "terminal"
-                        pb = None
-                        if visible:
-                            win = S["vte"].get_window()
-                            al = S["vte"].get_allocation()
-                            if win is not None and al.width > 10:
-                                pb = Gdk.pixbuf_get_from_window(
-                                    win, 0, 0, al.width, al.height)
-                        if pb is not None:
-                            wd = pb.get_width()
-                            if wd > 1100:
-                                pb = pb.scale_simple(
-                                    1100,
-                                    max(1, pb.get_height()
-                                        * 1100 // wd),
-                                    GdkPixbuf.InterpType.BILINEAR)
-                            ok, buf = pb.save_to_bufferv(
-                                "jpeg", ["quality"], ["72"])
-                            if ok:
-                                import base64 as _b64
-                                img = ("data:image/jpeg;base64,"
-                                       + _b64.b64encode(
-                                           bytes(buf)).decode())
-                    except Exception:
-                        pass
-                    if not img:
-                        img = _render_screen_image(scr)
-                    S["_img_uri"] = img
-                core.classify_tick(ca, scr, image=img)
+                core.classify_tick(
+                    ca, scr,
+                    image=lambda: _capture_screen_image(scr))
             except Exception as exc:  # the square must never freeze
                 if S.get("_scr_err") != str(exc):
                     S["_scr_err"] = str(exc)

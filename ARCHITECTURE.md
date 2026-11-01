@@ -257,6 +257,14 @@ model's screen/activity verdicts are *flavor*: they pick the
 animation inside an open turn and may flip freely — they can
 never open or close a turn, arm DONE, or move the panes, and
 they are not consulted at all when no known agent is present.
+Perception is event-driven, never periodic: a screenshot call
+fires only after the terminal text changed and settled for
+4 s (continuous output stretches to a 14 s cap), plus exactly
+one trailing call 4 s after each fired call to catch the
+final state; a static screen costs zero calls. The image is
+the terminal widget only — real pixels when it is mapped, a
+rendered text frame otherwise (the VTE grid lives off-screen,
+so content-covered or minimized terminals are still read).
 (This replaced a pile of compensating heuristics — marker
 vetoes, vote counting, display hysteresis, transcript regexes
 — whose compositions kept producing phantom states.)

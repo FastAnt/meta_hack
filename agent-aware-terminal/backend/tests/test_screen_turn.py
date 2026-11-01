@@ -90,3 +90,49 @@ class ScreenTurnTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+
+class ClassifyScheduleTests(unittest.TestCase):
+    """Perception fires on change, not on a timer: settle 4 s,
+    one call; exactly one trailing call 4 s later; a static
+    screen costs nothing; endless output caps at MAX_WAIT."""
+
+    def setUp(self):
+        self.core = object.__new__(_native().Core)
+
+    def test_settle_then_fire_once(self):
+        c = self.core
+        self.assertFalse(c._classify_due(100.0, "banner"))
+        self.assertFalse(c._classify_due(103.9, "banner"))
+        self.assertTrue(c._classify_due(104.0, "banner"))
+
+    def test_one_trailing_call_then_silence(self):
+        c = self.core
+        c._classify_due(100.0, "banner")
+        c._screen_at = 104.0
+        self.assertTrue(c._classify_due(104.0, "banner"))
+        c._screen_at = 104.0
+        self.assertFalse(c._classify_due(107.9, "banner"))
+        self.assertTrue(c._classify_due(108.0, "banner"))
+        c._screen_at = 108.0
+        self.assertFalse(c._classify_due(120.0, "banner"))
+        self.assertFalse(c._classify_due(200.0, "banner"))
+
+    def test_changes_rearm_the_debounce(self):
+        c = self.core
+        self.assertFalse(c._classify_due(100.0, "a"))
+        self.assertFalse(c._classify_due(103.0, "ab"))
+        self.assertFalse(c._classify_due(106.9, "ab"))
+        self.assertTrue(c._classify_due(107.0, "ab"))
+
+    def test_endless_output_caps_at_max_wait(self):
+        c = self.core
+        t = 100.0
+        fired = False
+        for i in range(40):
+            t += 2.0
+            if c._classify_due(t, f"line {i}"):
+                fired = True
+                break
+        self.assertTrue(fired)
+        self.assertLessEqual(t, 100.0 + 16.0)
