@@ -40,30 +40,41 @@ class ScreenTurnTests(unittest.TestCase):
         self._work(1)
         self.assertIsNone(self.core._last_outcome)
 
-    def test_persistent_idle_ends_turn(self):
-        self._work()
-        self.core._screen_turn_tick("codex", "idle_at_prompt", 0.9)
-        self.core._screen_end_since -= 20  # stretch the window
-        self.core._screen_turn_tick("codex", "idle_at_prompt", 0.9)
-        self.core._screen_turn_tick("codex", "finished", 0.9)
-        self.assertIsNotNone(self.core._last_outcome)
-        self.assertEqual(self.core._last_outcome["mode"], "done")
+    def _quiet_close(self, secs=30):
+        screen = "static prompt screen"
+        self.core._screen_hash = hash(screen)
+        self.core._screen_quiet_since = time.time() - secs
+        self.core._screen_quiet_tick("codex", screen)
 
-    def test_weak_verdicts_do_not_confirm(self):
+    def test_rest_verdicts_never_end_turn(self):
+        # Even persistent confident "idle/finished" verdicts are
+        # flavor now: they cannot end a turn or arm DONE.
         self._work()
         for _ in range(5):
             self.core._screen_turn_tick(
-                "codex", "idle_at_prompt", 0.2)
+                "codex", "idle_at_prompt", 0.95)
+            self.core._screen_turn_tick("codex", "finished", 0.95)
         self.assertIsNone(self.core._last_outcome)
         self.assertTrue(self.core._screen_turn_active)
 
-    def test_confirmed_end_computes_results(self):
-        # The DONE window must carry FILES/DONE/SAFE: a confirmed
-        # screen-turn end finalizes the observed turn.
+    def test_screen_quiet_ends_turn(self):
         self._work()
-        self.core._screen_turn_tick("codex", "idle_at_prompt", 0.9)
-        self.core._screen_end_since -= 20
-        self.core._screen_turn_tick("codex", "idle_at_prompt", 0.9)
+        self._quiet_close()
+        self.assertIsNotNone(self.core._last_outcome)
+        self.assertEqual(self.core._last_outcome["mode"], "done")
+        self.assertFalse(self.core._screen_turn_active)
+
+    def test_quiet_too_short_keeps_turn(self):
+        self._work()
+        self._quiet_close(secs=1)  # under TURN_END_CONFIRM_S
+        self.assertTrue(self.core._screen_turn_active)
+        self.assertIsNone(self.core._last_outcome)
+
+    def test_confirmed_end_computes_results(self):
+        # The DONE window must carry FILES/DONE/SAFE: the quiet
+        # turn end finalizes the observed turn.
+        self._work()
+        self._quiet_close()
         self.assertIsNotNone(self.core.results)
         self.assertTrue(self.core.results["observed"])
         self.assertEqual(self.core.results["final_state"],
@@ -79,30 +90,3 @@ class ScreenTurnTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-
-class ScreenRuleTests(unittest.TestCase):
-    def test_edited_line_means_writing_code(self):
-        native = _native()
-        screen = ("Ran python3 build.py\n"
-                  "Edited 2 files (+8 -0)\n"
-                  "docs/x.md (+4 -0)\nWorking (3m - esc)")
-        self.assertEqual(native._screen_rule_choice(screen),
-                         "writing_code")
-
-    def test_old_edited_line_out_of_window_is_ignored(self):
-        native = _native()
-        lines = ["Edited 9 files (+1 -1)"] + \
-            [f"output line {i}" for i in range(30)]
-        self.assertIsNone(
-            native._screen_rule_choice("\n".join(lines)))
-
-    def test_work_root_follows_terminal_cwd(self):
-        import pathlib as _pl
-        core = _native().Core(tempfile.mkdtemp())
-        with tempfile.TemporaryDirectory() as tmp:
-            sub = _pl.Path(tmp) / "proj" / "src"
-            sub.mkdir(parents=True)
-            (_pl.Path(tmp) / "proj" / ".git").mkdir()
-            core.snapshot = {"cwd": str(sub)}
-            self.assertEqual(core._work_root(),
-                             str(_pl.Path(tmp) / "proj"))

@@ -180,6 +180,7 @@ class ModeClassificationTests(unittest.TestCase):
         self.assertEqual(m({"state": "tool_running", "tool": "bash",
                             "command": "python -m pytest -q"}), "test")
         self.assertEqual(m({"state": "tool_running", "tool": "bash",
+                            "agent": "codex",
                             "command": "ls -la"}), "build")
         self.assertEqual(m({"state": "tool_running", "tool": "web_fetch",
                             "command": None}), "trail")

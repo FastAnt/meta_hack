@@ -527,9 +527,6 @@ class Core:
         return g
 
     # -- System-1 activity classification (ambiguous moments) -------------
-    SCREEN_MODE_FOR_RULE = {"writing_code": "build",
-                            "running_tests": "test",
-                            "downloading": "download"}
     SCREEN_WORK = {"thinking", "searching_system", "searching_web",
                    "writing_code", "installing", "downloading",
                    "compiling", "running_tests", "waiting_for_user",
@@ -540,17 +537,13 @@ class Core:
         os.environ.get("AAT_TURN_END_CONFIRM_S", "4"))
 
     def _screen_turn_tick(self, agent_name, choice, conf):
-        """End-of-turn detection for adapter-less agents.
-
-        The process observer often sees an interactive agent (Codex)
-        as idle for its whole turn — the work happens in-process.
-        The screen verdicts are then the only turn signal: work
-        verdicts open a screen turn, and 'finished'/'idle_at_prompt'
-        after a real turn arm the DONE window, just like the
-        process-driven path does."""
+        """A screen verdict's only state powers: OPEN a turn on
+        work, remember a failure. Everything else is flavor for
+        the animation. Turns close deterministically (process
+        edges, screen quiet), never by model vote — the votes
+        proved too flaky to hold state (mid-turn prompt flashes
+        armed DONE; single samples dropped the square to idle)."""
         if choice in self.SCREEN_WORK and conf >= 0.45:
-            self._screen_end_count = 0
-            self._screen_end_since = 0.0
             if not getattr(self, "_screen_turn_active", False):
                 self._screen_turn_active = True
                 self._screen_turn_failed = False
@@ -562,8 +555,7 @@ class Core:
             if oc and oc.get("mode") == "done" \
                     and oc.get("agent") == agent_name:
                 # Fresh work evidence cancels a stale DONE: the
-                # agent demonstrably resumed (its previous
-                # "ending" was a mid-turn prompt flash).
+                # agent demonstrably resumed.
                 self._last_outcome = None
                 self.dlog("mode", "sticky done cleared: work "
                                   f"resumed ({agent_name})")
@@ -579,8 +571,6 @@ class Core:
                 vanish["last_choice"] = "failed"
             return
         if choice in ("finished", "idle_at_prompt"):
-            active = getattr(self, "_screen_turn_active", False)
-            started = getattr(self, "_screen_turn_since", 0) or 0
             vanish = getattr(self, "_vanish", None)
             if vanish and vanish["agent"] == agent_name:
                 # The processes already proved a turn happened;
@@ -596,48 +586,55 @@ class Core:
                     self._screen_turn_active = False
                 else:
                     vanish["last_choice"] = choice
-                return
-            if active and agent_name == getattr(
-                    self, "_screen_turn_agent", None) \
-                    and time.time() - started >= 5 \
-                    and not getattr(self, "_screen_turn_failed",
-                                    False):
-                # One prompt flash mid-turn must not end it
-                # (Codex shows its prompt between steps while
-                # "Working (...)" continues). The end verdict
-                # has to persist: >= 2 confident verdicts over
-                # >= TURN_END_CONFIRM_S seconds. Weak verdicts
-                # neither advance nor reset the confirmation.
-                if conf >= 0.35:
-                    now = time.time()
-                    if not getattr(self, "_screen_end_since", 0):
-                        self._screen_end_since = now
-                        self._screen_end_count = 0
-                    self._screen_end_count = getattr(
-                        self, "_screen_end_count", 0) + 1
-                    if self._screen_end_count >= 2 \
-                            and now - self._screen_end_since \
-                            >= self.TURN_END_CONFIRM_S:
-                        self._last_outcome = {
-                            "key": getattr(self,
-                                           "_agent_key_now", None),
-                            "agent": agent_name, "mode": "done"}
-                        self.dlog("mode", "screen turn ended -> "
-                                          "sticky done "
-                                          f"({agent_name}, via "
-                                          f"{choice}, confirmed "
-                                          f"{self._screen_end_count}x)")
-                        self._screen_end_count = 0
-                        self._screen_end_since = 0.0
-                        self._screen_turn_active = False
-                        self._finish_observed_turn(
-                            agent_name,
-                            "failed" if getattr(
-                                self, "_screen_turn_failed",
-                                False) else "completed",
-                            int(time.time() - started))
-                return
-            self._screen_turn_active = False
+
+    def _screen_quiet_tick(self, agent_name, screen):
+        """Deterministic turn close for screen-driven agents:
+        the screen text stopped changing and no process is
+        busy. An agent at its prompt has a static screen; a
+        working one keeps redrawing (elapsed timers, output,
+        spinners). Quiet for TURN_END_CONFIRM_S ends the turn —
+        measured, not voted."""
+        h = hash((screen or "")[-900:])
+        if h != getattr(self, "_screen_hash", None):
+            self._screen_hash = h
+            self._screen_quiet_since = time.time()
+            return
+        if not getattr(self, "_screen_turn_active", False):
+            return
+        if agent_name != getattr(self, "_screen_turn_agent", None):
+            return
+        if getattr(self, "_busy_started_at", None):
+            return  # processes are the truth; they say busy
+        started = getattr(self, "_screen_turn_since", 0) or 0
+        quiet_for = time.time() - getattr(
+            self, "_screen_quiet_since", time.time())
+        if quiet_for < self.TURN_END_CONFIRM_S \
+                or time.time() - started < 5:
+            return
+        self._screen_turn_active = False
+        failed = getattr(self, "_screen_turn_failed", False)
+        if not failed:
+            self._last_outcome = {
+                "key": getattr(self, "_agent_key_now", None),
+                "agent": agent_name, "mode": "done"}
+        self.dlog("mode", "screen quiet -> turn ended "
+                          f"({agent_name}, "
+                          f"{int(time.time() - started)}s)")
+        self._finish_observed_turn(
+            agent_name, "failed" if failed else "completed",
+            int(time.time() - started))
+
+    def turn_open(self) -> bool:
+        """Is a turn demonstrably in progress? The single busy
+        truth the UI keys on: a process-driven busy span, a
+        screen-driven turn, or adapter-reported work."""
+        if getattr(self, "_screen_turn_active", False):
+            return True
+        if getattr(self, "_busy_started_at", None):
+            return True
+        st = self.agent_state or {}
+        return st.get("source") == "agent_event" and \
+            st.get("state") in BUSY_STATES
 
     def classify_tick(self, agent: dict, screen: str = ""):
         """When the event stream only says generic "working" (no tool),
@@ -659,21 +656,7 @@ class Core:
             self._screen_tail = screen[-1500:]
         if screen and agent.get("agent") \
                 and agent.get("source") != "agent_event":
-            rule = _screen_rule_choice(screen)
-            if rule:
-                now = time.time()
-                if now - getattr(self, "_screen_at", 0) >= 4:
-                    self._screen_at = now
-                    self._screen_turn_tick(
-                        agent.get("agent"), rule, 0.9)
-                    self.mode_override = {
-                        "mode": self.SCREEN_MODE_FOR_RULE[rule],
-                        "at": now, "choice": rule,
-                        "confidence": 0.9, "screen": True}
-                    self.dlog("system1",
-                              f"screen rule -> {rule} "
-                              "(deterministic)")
-                return
+            self._screen_quiet_tick(agent.get("agent"), screen)
             if not self.liquid.configured:
                 if not getattr(self, "_nokey_logged", False):
                     self._nokey_logged = True
@@ -696,23 +679,6 @@ class Core:
                 try:
                     out = self.liquid.classify_screen(
                         screen, agent.get("agent") or "agent")
-                    _lines = [ln for ln in screen.splitlines()
-                              if ln.strip()]
-                    if out and out["choice"] in (
-                            "idle_at_prompt", "finished") and re.search(
-                            r"esc to interrupt|Working \(\d",
-                            "\n".join(_lines[-8:])):
-                        # The screen itself proves work is in
-                        # progress ("Working (1m 42s - esc to
-                        # interrupt)"); a model verdict cannot
-                        # overrule visible text.
-                        out = {**out, "choice": "thinking",
-                               "mode": "flash",
-                               "confidence": max(
-                                   out["confidence"], 0.5)}
-                        self.dlog("system1", "screen marker veto: "
-                                             "working text visible, "
-                                             "verdict -> thinking")
                     if out:
                         self.liquid_stats["screen_ok"] += 1
                         self.liquid_stats["last_choice"] = out["choice"]
@@ -727,36 +693,6 @@ class Core:
                     if out and out["confidence"] >= 0.45 and not (
                             out["mode"] in ("shuffle", "question")
                             and out["confidence"] < 0.6):
-                        # Display hysteresis: work verdicts apply
-                        # at once, but a single "rest" verdict
-                        # (blinky/done) between steps must not
-                        # drop the animation and yank the pane
-                        # back to the terminal — rest needs two
-                        # consecutive samples, like turn ends.
-                        if out["mode"] in ("blinky", "done"):
-                            cur = getattr(self, "mode_override",
-                                          None)
-                            fresh = cur and time.time() \
-                                - cur.get("at", 0) < 9
-                            if fresh and cur.get("mode") not in (
-                                    "blinky", "done", None):
-                                self._rest_pending = getattr(
-                                    self, "_rest_pending", 0) + 1
-                                if self._rest_pending < 2:
-                                    self.dlog(
-                                        "system1",
-                                        "rest verdict held "
-                                        f"({self._rest_pending}/2)")
-                                    out = None
-                                else:
-                                    self._rest_pending = 0
-                            else:
-                                self._rest_pending = 0
-                        else:
-                            self._rest_pending = 0
-                    if out and out["confidence"] >= 0.45 and not (
-                            out["mode"] in ("shuffle", "question")
-                            and out["confidence"] < 0.6):
                         self.mode_override = {
                             "mode": out["mode"], "at": time.time(),
                             "choice": out["choice"],
@@ -768,6 +704,13 @@ class Core:
                 finally:
                     self._classifying = False
             threading.Thread(target=_ask_screen, daemon=True).start()
+            return
+        if not agent.get("agent"):
+            # Unknown foreground programs (a new agent CLI we
+            # do not track, an editor, a TUI) are the user's
+            # business, not an agent's: no System-1 calls, no
+            # modes. Shell commands still classify
+            # deterministically in the display layer.
             return
         if not self.liquid.configured or self._classifying:
             return
@@ -1537,16 +1480,6 @@ def _read_vte_text(term) -> str:
     return ""
 
 
-_s = lambda s, n=60: " ".join(str(s).split())[:n]
-
-
-_SCREEN_RULES = (
-    ("writing_code", re.compile(r"Edited \d+ files?|Edited \S+\.(py|js|ts|md|cpp|c|h|rs|go|json)")),
-    ("running_tests", re.compile(r"\b\d+ passed\b|Ran \d+ tests|OK \(\d+ tests\)|FAILED \(failures")),
-    ("downloading", re.compile(r"Cloning into|Receiving objects:|Downloading \d|Fetching \d")),
-)
-
-
 def creator_task_text(app_root, project_root, want_type,
                       task: str = "") -> str:
     """One-item mission for the creator agent (Muse today).
@@ -1657,18 +1590,10 @@ def project_substance(profile: dict) -> tuple:
     return total >= 10, f"domain evidence {total}"
 
 
-def _screen_rule_choice(screen: str):
-    """Deterministic readings of the agent's own transcript.
-    When the terminal literally prints 'Edited 2 files', no
-    model vote is needed (112:1 'thinking' vs 'writing_code'
-    on such screens says why): the last lines are facts.
-    Returns a SCREEN_MODES choice or None."""
-    lines = [ln for ln in (screen or "").splitlines() if ln.strip()]
-    tail = "\n".join(lines[-14:])
-    for choice, rx in _SCREEN_RULES:
-        if rx.search(tail):
-            return choice
-    return None
+_s = lambda s, n=60: " ".join(str(s).split())[:n]
+
+
+
 
 
 def mode_for_agent(agent: dict) -> str:
@@ -1761,7 +1686,11 @@ def mode_for_agent(agent: dict) -> str:
             return "trail"
         if re.search(r"search|grep|glob|find|read|list|scan", text):
             return "glitch"
-        return "build"
+        # Generic work by a KNOWN agent reads as code-writing
+        # until flavor refines it. The same state with no agent
+        # is just some foreground program (sleep, an editor, an
+        # untracked TUI): the user is driving — float.
+        return "build" if agent.get("agent") else "blinky"
     return "blinky"
 
 
@@ -2006,15 +1935,48 @@ def run_gui(project_arg: str | None) -> int:
     # -- creator agent: the app may launch the content
     # researcher itself (a configured CLI, or the built-in
     # harness driving an arbitrary LLM endpoint).
+    def _creator_env():
+        """Effective creator settings: the Settings tab wins,
+        environment variables are the initial value/fallback.
+        The LLM API key is never persisted (keys.sh or the
+        password field for this session only)."""
+        env = dict(os.environ)
+        cfg = S.get("creator_cfg") or {}
+        mapping = {
+            "provider": "AAT_CREATOR_PROVIDER",
+            "model": "AAT_CREATOR_MODEL",
+            "llm_base": "AAT_CREATOR_LLM_BASE_URL",
+            "llm_key": "AAT_CREATOR_LLM_API_KEY",
+            "custom_cmd": "AAT_CREATOR_CMD",
+            "codex_sandbox": "AAT_CREATOR_CODEX_SANDBOX",
+        }
+        for field, var in mapping.items():
+            if cfg.get(field):
+                env[var] = cfg[field]
+        return env
+
+    def _save_creator_cfg():
+        import json
+        cfg = S.get("creator_cfg") or {}
+        keep = {k: cfg[k] for k in (
+            "provider", "model", "llm_base", "custom_cmd",
+            "codex_sandbox") if cfg.get(k)}
+        try:
+            path = DATA_DIR / "creator_settings.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(keep), encoding="utf-8")
+        except Exception:
+            pass
     def _creator_busy():
         return S.get("_creator_proc") is not None \
             or bool(S.get("_creator_llm"))
 
     def _spawn_llm_creator(want_type, root, reason, prompt):
         from backend.app import llm_creator
-        base = os.environ.get("AAT_CREATOR_LLM_BASE_URL", "")
-        key = os.environ.get("AAT_CREATOR_LLM_API_KEY", "")
-        model = os.environ.get("AAT_CREATOR_LLM_MODEL", "")
+        env = _creator_env()
+        base = env.get("AAT_CREATOR_LLM_BASE_URL", "")
+        key = env.get("AAT_CREATOR_LLM_API_KEY", "")
+        model = env.get("AAT_CREATOR_LLM_MODEL", "")
         missing = [n for n, v in (
             ("AAT_CREATOR_LLM_BASE_URL", base),
             ("AAT_CREATOR_LLM_API_KEY", key),
@@ -2074,12 +2036,13 @@ def run_gui(project_arg: str | None) -> int:
         root = str(root)
         task = (core.agent_state or {}).get("task") or ""
         prompt = creator_task_text(RES_ROOT, root, want_type, task)
-        if (os.environ.get("AAT_CREATOR_PROVIDER")
+        env = _creator_env()
+        if (env.get("AAT_CREATOR_PROVIDER")
                 or "").strip().lower() == "llm":
             return _spawn_llm_creator(want_type, root, reason,
                                       prompt)
         try:
-            cmd = creator_command()
+            cmd = creator_command(env)
         except ValueError as exc:
             core.dlog("content", f"creator misconfigured: {exc}")
             _set_content_note(f"Creator misconfigured: {exc}")
@@ -3450,6 +3413,190 @@ def run_gui(project_arg: str | None) -> int:
         S["set_threshold"].set_value(5)
         row.pack_start(S["set_threshold"], False, False, 0)
         settings_box.pack_start(row, False, False, 0)
+        settings_box.pack_start(
+            Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL),
+            False, False, 10)
+
+        # ---- content creator: agent first, then its models ----
+        kicker = Gtk.Label(label="CONTENT CREATOR")
+        kicker.get_style_context().add_class("settings-kicker")
+        kicker.set_xalign(0)
+        settings_box.pack_start(kicker, False, False, 0)
+        import json as _json
+        try:
+            _saved_cfg = _json.loads(
+                (DATA_DIR / "creator_settings.json").read_text(
+                    encoding="utf-8"))
+        except Exception:
+            _saved_cfg = {}
+        S["creator_cfg"] = {
+            "provider": _saved_cfg.get("provider")
+                or os.environ.get("AAT_CREATOR_PROVIDER")
+                or ("custom" if os.environ.get("AAT_CREATOR_CMD")
+                    else "muse"),
+            "model": _saved_cfg.get("model")
+                or os.environ.get("AAT_CREATOR_MODEL", ""),
+            "llm_base": _saved_cfg.get("llm_base")
+                or os.environ.get("AAT_CREATOR_LLM_BASE_URL", ""),
+            "llm_key": os.environ.get("AAT_CREATOR_LLM_API_KEY", ""),
+            "custom_cmd": _saved_cfg.get("custom_cmd")
+                or os.environ.get("AAT_CREATOR_CMD", ""),
+            "codex_sandbox": _saved_cfg.get("codex_sandbox")
+                or os.environ.get("AAT_CREATOR_CODEX_SANDBOX",
+                                  "workspace-write"),
+        }
+
+        def _cfg_set(field, value):
+            S["creator_cfg"][field] = value
+            _save_creator_cfg()
+
+        def _refresh_creator_rows():
+            prov = S["creator_cfg"].get("provider", "muse")
+            S["set_model_row"].set_visible(prov != "custom")
+            S["set_llm_box"].set_visible(prov == "llm")
+            S["set_custom_row"].set_visible(prov == "custom")
+            S["set_sandbox_row"].set_visible(prov == "codex")
+
+        def _populate_models():
+            prov = S["creator_cfg"].get("provider", "muse")
+            combo = S["set_model"]
+            combo.remove_all()
+            combo.append_text("")
+            if prov == "codex":
+                try:
+                    import re as _re2
+                    txt = (Path.home() / ".codex"
+                           / "config.toml").read_text(
+                               encoding="utf-8")
+                    m = _re2.search(r'^model\s*=\s*"([^"]+)"',
+                                    txt, _re2.M)
+                    if m:
+                        combo.append_text(m.group(1))
+                except Exception:
+                    pass
+            elif prov == "kilo":
+                cached = S.get("_kilo_models")
+                if cached is None:
+                    S["_kilo_models"] = []
+
+                    def _fetch():
+                        try:
+                            out = subprocess.run(
+                                ["kilo", "models"],
+                                capture_output=True, text=True,
+                                timeout=25)
+                            S["_kilo_models"] = [
+                                ln.strip() for ln in
+                                out.stdout.splitlines()
+                                if "/" in ln
+                                and " " not in ln.strip()][:300]
+                        except Exception:
+                            S["_kilo_models"] = []
+                        GLib.idle_add(_populate_models)
+
+                    threading.Thread(target=_fetch,
+                                     daemon=True).start()
+                for name in cached or []:
+                    combo.append_text(name)
+            combo.get_child().set_text(
+                S["creator_cfg"].get("model", ""))
+
+        prow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                       spacing=8)
+        prow.pack_start(Gtk.Label(label="Creator agent"),
+                        False, False, 0)
+        S["set_provider"] = Gtk.ComboBoxText()
+        for pid, label in (("muse", "Muse"), ("codex", "Codex"),
+                           ("kilo", "Kilo"),
+                           ("llm", "LLM endpoint (any)"),
+                           ("custom", "Custom command")):
+            S["set_provider"].append(pid, label)
+        prow.pack_start(S["set_provider"], True, True, 0)
+        settings_box.pack_start(prow, False, False, 0)
+
+        S["set_model_row"] = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        S["set_model_row"].pack_start(
+            Gtk.Label(label="Model"), False, False, 0)
+        S["set_model"] = Gtk.ComboBoxText.new_with_entry()
+        S["set_model"].get_child().set_placeholder_text(
+            "empty = agent default")
+        S["set_model_row"].pack_start(S["set_model"], True, True, 0)
+        settings_box.pack_start(S["set_model_row"], False, False, 0)
+
+        S["set_llm_box"] = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        S["set_llm_base"] = Gtk.Entry()
+        S["set_llm_base"].set_placeholder_text(
+            "Base URL — https://api.deepseek.com/v1")
+        S["set_llm_base"].set_text(S["creator_cfg"]["llm_base"])
+        S["set_llm_box"].pack_start(S["set_llm_base"],
+                                    False, False, 0)
+        S["set_llm_key"] = Gtk.Entry()
+        S["set_llm_key"].set_visibility(False)
+        S["set_llm_key"].set_placeholder_text(
+            "API key (session only; or keys.sh)")
+        S["set_llm_key"].set_text(S["creator_cfg"]["llm_key"])
+        S["set_llm_box"].pack_start(S["set_llm_key"],
+                                    False, False, 0)
+        settings_box.pack_start(S["set_llm_box"], False, False, 0)
+
+        S["set_custom_row"] = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        S["set_custom_cmd"] = Gtk.Entry()
+        S["set_custom_cmd"].set_placeholder_text(
+            "my-agent exec --yolo")
+        S["set_custom_cmd"].set_text(S["creator_cfg"]["custom_cmd"])
+        S["set_custom_row"].pack_start(S["set_custom_cmd"],
+                                       True, True, 0)
+        settings_box.pack_start(S["set_custom_row"],
+                                False, False, 0)
+
+        S["set_sandbox_row"] = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        S["set_sandbox_row"].pack_start(
+            Gtk.Label(label="Codex sandbox"), False, False, 0)
+        S["set_codex_sandbox"] = Gtk.ComboBoxText()
+        S["set_codex_sandbox"].append("workspace-write",
+                                      "workspace-write")
+        S["set_codex_sandbox"].append("bypass", "bypass")
+        S["set_sandbox_row"].pack_start(
+            S["set_codex_sandbox"], True, True, 0)
+        settings_box.pack_start(S["set_sandbox_row"],
+                                False, False, 0)
+
+        for row_w in (S["set_model_row"], S["set_llm_box"],
+                      S["set_custom_row"], S["set_sandbox_row"]):
+            row_w.set_no_show_all(True)
+        S["set_provider"].set_active_id(
+            S["creator_cfg"]["provider"])
+        S["set_codex_sandbox"].set_active_id(
+            S["creator_cfg"]["codex_sandbox"])
+        S["set_provider"].connect(
+            "changed", lambda _c: (
+                _cfg_set("provider",
+                         S["set_provider"].get_active_id()
+                         or "muse"),
+                _refresh_creator_rows(), _populate_models()))
+        S["set_model"].get_child().connect(
+            "changed", lambda e: _cfg_set(
+                "model", e.get_text().strip()))
+        S["set_llm_base"].connect(
+            "changed", lambda e: _cfg_set(
+                "llm_base", e.get_text().strip()))
+        S["set_llm_key"].connect(
+            "changed", lambda e: S["creator_cfg"].update(
+                llm_key=e.get_text().strip()))
+        S["set_custom_cmd"].connect(
+            "changed", lambda e: _cfg_set(
+                "custom_cmd", e.get_text().strip()))
+        S["set_codex_sandbox"].connect(
+            "changed", lambda _c: _cfg_set(
+                "codex_sandbox",
+                S["set_codex_sandbox"].get_active_id()
+                or "workspace-write"))
+        _refresh_creator_rows()
+        _populate_models()
         settings_box.pack_start(
             Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL),
             False, False, 10)
@@ -4960,7 +5107,12 @@ def run_gui(project_arg: str | None) -> int:
             ov = core.mode_override
             ambiguous = not agent.get("tool") or agent.get("state") == "working"
             via = "deterministic"
-            if ov and ambiguous and mode in ("build", "blinky") \
+            # Flavor may only show while a turn is demonstrably
+            # open (or over a deterministic build): a model
+            # verdict can never resurrect animation over an
+            # idle prompt.
+            if ov and ambiguous and (core.turn_open()
+                                     or mode == "build") \
                     and time.time() - ov["at"] < 9:
                 # A 'failed' screen verdict may not interrupt while
                 # processes/log facts say the agent is still working:
@@ -4973,16 +5125,14 @@ def run_gui(project_arg: str | None) -> int:
             S["mode"] = mode
             S["square"].set_mode(mode)
             S["_square_mode"] = mode
-            # "Busy" for the attention model: log states where we
-            # have them, and the screen-evidenced visual mode for
-            # adapter-less agents (Codex reasons and browses
-            # childless — no processes to observe, but the square
-            # already knows it is working).
-            busy_now = state in BUSY_STATES or (
-                agent.get("source") == "heuristic"
-                and mode not in ("blinky", "shuffle", "question",
-                                 "done", "fail", "fail_compile",
-                                 "fail_link", "fail_test"))
+            # "Busy" for the attention model is the turn
+            # skeleton's word, not the animation's: a known
+            # agent's open turn, or a shell command the verb
+            # tables recognize (cargo/make/apt...). Unknown
+            # foreground TUIs (an untracked agent CLI, an
+            # editor) never count: that is the user driving.
+            busy_now = core.turn_open() and (
+                bool(agent.get("agent")) or mode != "blinky")
             if busy_now and not S.get("_agent_busy"):
                 # A busy blip (< 4 s gap in the screen verdicts) is
                 # the same phase: keep the clock and the user's

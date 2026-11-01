@@ -83,6 +83,9 @@ class ModeMatrixTests(unittest.TestCase):
         native = _native()
         for name, agent, expected in self.CASES:
             with self.subTest(name):
+                # The matrix describes agent states; production
+                # dicts from adapters/observers carry the name.
+                agent = {"agent": "muse", **agent}
                 self.assertEqual(native.mode_for_agent(agent), expected)
 
     def test_every_caption_mode_is_reachable(self):
@@ -350,13 +353,12 @@ class SourcePriorityTests(CoreScenarioTests):
 
 
 def _confirm_end(core, choice="idle_at_prompt"):
-    """Feed a persistent end verdict the way the live classifier
-    would: repeated, confident, spread over time."""
-    core._screen_turn_tick("codex", choice, 0.8)
-    if getattr(core, "_screen_end_since", 0):
-        core._screen_end_since -= 20
-    core._screen_turn_tick("codex", choice, 0.8)
-    core._screen_turn_tick("codex", choice, 0.8)
+    """End the screen turn the way production does now: the
+    screen went quiet (static prompt, no process busy)."""
+    screen = "static prompt screen"
+    core._screen_hash = hash(screen)
+    core._screen_quiet_since = time.time() - 30
+    core._screen_quiet_tick("codex", screen)
 
 
 class ScreenTurnTests(CoreScenarioTests):
