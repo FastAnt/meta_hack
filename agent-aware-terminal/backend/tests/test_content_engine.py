@@ -322,6 +322,41 @@ class ShippedTypeDeclarationTests(unittest.TestCase):
         self.assertEqual(missing, [])
 
 
+class FactBespokeVisualTests(unittest.TestCase):
+    """Anti-stamp guard: every shipped fact module must carry
+    its own paint() implementation — a reused scene skeleton
+    (same code with different literals) fails the suite."""
+
+    def test_fact_paint_skeletons_are_unique(self):
+        import ast as _ast
+        import hashlib
+        import re as _re
+
+        def skeleton(path):
+            tree = _ast.parse(path.read_text())
+            for node in tree.body:
+                if isinstance(node, _ast.FunctionDef) \
+                        and node.name == "paint":
+                    src = _ast.unparse(node)
+                    # Labels may repeat; geometry may not —
+                    # same coordinates with new captions is
+                    # exactly the stamp this guard exists for.
+                    src = _re.sub(r"'[^']*'", "'S'", src)
+                    src = _re.sub(r'"[^"]*"', "'S'", src)
+                    return hashlib.sha1(src.encode()).hexdigest()
+            return None
+
+        seen = {}
+        dupes = []
+        for f in sorted(GAMES_DIR.glob("*fact*.py")):
+            sk = skeleton(f)
+            self.assertIsNotNone(sk, f"{f.name}: fact has no paint()")
+            if sk in seen:
+                dupes.append((f.name, seen[sk]))
+            seen[sk] = f.name
+        self.assertEqual(dupes, [])
+
+
 class ContentTypeTests(unittest.TestCase):
     def test_legacy_kinds_resolve_to_types(self):
         pack, err = ce.validate_pack({
