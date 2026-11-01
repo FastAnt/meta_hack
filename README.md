@@ -4,6 +4,13 @@ A hackathon project built for the Meta Muse hackathon: a Linux terminal
 that **understands when an AI coding agent is working inside it** and turns
 the waiting time into an interactive, living map of your project.
 
+## Documentation
+
+- **`AGENTS.md`** — agent quickstart: read order, task routing,
+  commands, hard rules. Start here if you are an agent.
+- **`ARCHITECTURE.md`** — full architecture: runtime pipeline,
+  content system, contextual selection, data layout, git flow.
+
 ## The idea
 
 When a coding agent (here: **Muse**) works autonomously for minutes —
