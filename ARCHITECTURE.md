@@ -159,15 +159,40 @@ Every pack declares `"type"` explicitly (guarded by tests):
 
 | type | Behaviour |
 | --- | --- |
-| `game` | quiz, scored (points + streaks) |
-| `fact` | read-only, Skip/Next |
-| `news` | Skip/Next + Open link (http/https `link`) |
-| `idea` | Save → `.aat/research/saved_ideas.jsonl` for a future agent |
+| `game` | quiz, scored (points + streaks); Next skips |
+| `fact` | read-only, Next / swipe |
+| `news` | Next / swipe + Open link (http/https `link`) |
+| `idea` | Next / swipe, Save → `.aat/research/saved_ideas.jsonl` for a future agent |
 
 The deck never repeats until every pack has been served
 (persisted in `content_state.json`). **One fact = one bespoke
 visual** authored for it — reused scene skeletons fail the
 test suite (`FactBespokeVisualTests`).
+
+The Feed header carries **All / News / Facts / Quiz / Ideas**
+chips (single choice; All by default). A runtime filter is a
+view over the same catalogue (`ContentEngine.set_type_filter`):
+it changes neither the vector index nor the persisted deck and
+it also bounds `content_selector.pick`, so a filtered pane never
+serves another type. Choosing a type with no packs is a
+generation trigger: the pane shows the empty state and spawns
+the researcher with that `want_type`; the deposit is served the
+moment it lands.
+
+Paging is Shorts-like. `serve_game` keeps a per-session trail:
+Next picks a new contextual pack at the tail and steps forward
+through already-shown cards after a back; Prev walks the trail.
+Mouse wheel / trackpad scroll pages at the edges (inside a long
+card it scrolls normally), touch swipes and ↑/↓ (while the
+terminal is not on screen) page too. A card is never repeated
+inside one cycle; only the deck's own ids are reset when a full
+filtered cycle finishes.
+
+Settings → Watched content shows `served / total` and offers a
+two-step **Reset watched history**: it clears the served set in
+`content_state.json` and the `serves` rows in `content_index.db`
+(all projects), so every pack is unseen again. ♥/✕ reactions
+and the vector index stay.
 
 ### Contextual selection (`content_selector`)
 
@@ -236,7 +261,7 @@ do not surface generated imagery in the pane.
 `AAT_TOUR_TYPE=game|fact|news|idea`, `AAT_MOCKSTATE=<mode>`,
 `AAT_SIM_FILE`, `AAT_OPEN_OVERLAY=1`, `AAT_APP_ID` (unique id
 for parallel test instances — the app is single-instance),
-`AAT_CREATOR_PROVIDER=muse|codex|custom` (who creates project content; default muse), `AAT_CREATOR_MODEL`, `AAT_CREATOR_CODEX_SANDBOX` (workspace-write default; `bypass` where Codex's own sandbox cannot start) (model id for muse/codex), `AAT_CREATOR_CMD` (full command for provider=custom — any agent CLI that takes the mission as its last argument, e.g. a DeepSeek runner; setting it alone also selects custom), `AAT_CREATOR=off` (never spawn the creator), `AAT_KEYS_FILE`, `LIQUID_MODEL`, `AAT_TURN_END_CONFIRM_S` (seconds a non-work screen verdict must persist before a screen-driven turn counts as ended; default 4), plus keys from `keys.sh`.
+`AAT_CREATOR_PROVIDER=muse|codex|kilo|llm|custom` (who creates project content; default muse; `llm` = the app's built-in harness over `AAT_CREATOR_LLM_BASE_URL` + `AAT_CREATOR_LLM_API_KEY` + `AAT_CREATOR_LLM_MODEL`, any OpenAI-compatible endpoint), `AAT_AGENT_PROCS` (extra terminal-agent process names to recognize, beyond muse/codex/claude/kilo), `AAT_CREATOR_MODEL`, `AAT_CREATOR_CODEX_SANDBOX` (workspace-write default; `bypass` where Codex's own sandbox cannot start) (model id for muse/codex), `AAT_CREATOR_CMD` (full command for provider=custom — any agent CLI that takes the mission as its last argument, e.g. a DeepSeek runner; setting it alone also selects custom), `AAT_CREATOR=off` (never spawn the creator), `AAT_KEYS_FILE`, `LIQUID_MODEL`, `AAT_TURN_END_CONFIRM_S` (seconds a non-work screen verdict must persist before a screen-driven turn counts as ended; default 4), plus keys from `keys.sh`.
 
 ### Creator auto-launch
 

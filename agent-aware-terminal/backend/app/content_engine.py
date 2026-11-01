@@ -470,6 +470,10 @@ class ContentEngine:
     def __init__(self, dirs, seed: int | None = None,
                  state_path=None, only_types=None):
         self.only_types = set(only_types) if only_types else None
+        # Runtime filter chosen in the pane (All / News / Facts /
+        # Quiz / Ideas). None means every type. It never changes
+        # the catalogue or the persisted deck, only what is served.
+        self.filter_types: set[str] | None = None
         self.dirs = [Path(d) for d in dirs]
         self._rng = random.Random(seed)
         self.packs: list[dict] = []
@@ -544,6 +548,52 @@ class ContentEngine:
             return True
         return False
 
+    # -- type filter (All / News / Facts / Quiz / Ideas) -----------
+    def set_type_filter(self, types) -> bool:
+        """Serve only these content types from now on.
+
+        `None`, empty or all four types mean "All". The filter is
+        a view over the same catalogue: it changes neither the
+        persisted deck nor the vector index."""
+        new = set(types) if types else None
+        if new is not None and new >= set(TYPES):
+            new = None
+        if new == self.filter_types:
+            return False
+        self.filter_types = new
+        return True
+
+    def matches(self, pack: dict) -> bool:
+        return self.filter_types is None or \
+            resolve_type(pack) in self.filter_types
+
+    def packs_for(self, types=None) -> list[dict]:
+        chosen = set(types) if types else self.filter_types
+        if not chosen:
+            return list(self.packs)
+        return [p for p in self.packs
+                if resolve_type(p) in chosen]
+
+    def type_counts(self) -> dict:
+        counts = {t: 0 for t in TYPES}
+        for pack in self.packs:
+            counts[resolve_type(pack)] = \
+                counts.get(resolve_type(pack), 0) + 1
+        return counts
+
+    def reset_history(self) -> int:
+        """Forget which packs were watched: the deck starts over.
+
+        Reactions and the catalogue are untouched — this is the
+        "reset watched history" action, not a preference wipe."""
+        n = len(self._served)
+        self._served = []
+        self._last = None
+        self.deck = list(self.packs)
+        self._rng.shuffle(self.deck)
+        self._save_state()
+        return n
+
     def _save_state(self):
         if not self.state_path:
             return
@@ -557,23 +607,37 @@ class ContentEngine:
 
     def next_game(self) -> dict | None:
         self.maybe_reload()
-        if not self.packs:
+        pool = [p for p in self.deck if self.matches(p)]
+        if not pool:
             return None
-        game = next((p for p in self.deck
+        game = next((p for p in pool
                      if p["id"] not in self._served), None)
         if game is None:
-            # Full cycle done: start over, but never serve the
-            # same pack twice in a row across the boundary.
-            self._served = []
+            # Full cycle done: start this pool over, but never
+            # serve the same pack twice in a row across the
+            # boundary. Only the pool's own ids become unseen
+            # again — other types keep their deck progress.
+            ids = {p["id"] for p in pool}
+            self._served = [i for i in self._served if i not in ids]
             self._rng.shuffle(self.deck)
-            if len(self.deck) > 1 and self.deck[0]["id"] == self._last:
-                self.deck.append(self.deck.pop(0))
-            game = self.deck[0]
+            candidates = [p for p in self.deck if self.matches(p)]
+            if len(candidates) > 1 \
+                    and candidates[0]["id"] == self._last:
+                candidates.append(candidates.pop(0))
+            game = candidates[0] if candidates else None
+            if game is None:
+                return None
         self._served.append(game["id"])
         self._last = game["id"]
         self._current = game
         self._save_state()
         return game
+
+    def focus(self, pack: dict) -> dict:
+        """Make an already-served pack current without deck
+        bookkeeping (the pane's back/forward history)."""
+        self._current = pack
+        return pack
 
     def serve_specific(self, pack: dict) -> dict:
         """Serve one chosen pack (selector path) with the same
@@ -593,7 +657,10 @@ class ContentEngine:
         return self._current
 
     def progress(self) -> tuple[int, int]:
-        return (len(self._served), len(self.packs))
+        pool = self.packs_for()
+        ids = {p["id"] for p in pool}
+        served = sum(1 for i in self._served if i in ids)
+        return (served, len(pool))
 
     def answer(self, target_id: str) -> dict:
         """Score an answer to the current pack. Cards never score."""

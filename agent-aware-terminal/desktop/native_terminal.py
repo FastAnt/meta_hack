@@ -1377,14 +1377,52 @@ headerbar button:hover {{ background: {p['surface2']}; color: {p['text']}; }}
 .content-body {{ color: {p['body']}; font-family: {GROTESK}; font-size: 14px; }}
 .content-q {{ color: {p['text']}; font-family: {GROTESK}; font-size: 16px; font-weight: 600; }}
 button.choice {{ background: transparent; color: {p['body']}; border: 1px solid {p['border']}; border-radius: 12px; padding: 12px 14px; font-family: {GROTESK}; font-size: 15px; box-shadow: none; }}
+button.choice label {{ color: {p['body']}; }}
 button.choice:hover {{ border-color: {p['text']}; color: {p['text']}; }}
-button.choice-right {{ background: {p['text']}; color: {p['bg']}; border-color: {p['text']}; }}
+button.choice:hover label {{ color: {p['text']}; }}
+button.choice-right {{ background: {p['text']}; border-color: {p['text']}; }}
+button.choice-right, button.choice-right label {{ color: {p['bg']}; }}
 .fb-ok {{ font-size: 15px; font-weight: 600; color: {p['text']}; }}
 button.react-on {{ background: {p['surface2']}; color: {p['text']}; }}
 .fb-no {{ font-size: 15px; font-weight: 600; color: {p['muted']}; }}
 button.choice-wrong {{ color: {p['muted']}; border-color: {p['muted']}; }}
+button.choice-wrong label {{ color: {p['muted']}; }}
 button.game-next {{ background: transparent; color: {p['text']}; border: none; border-radius: 9999px; padding: 7px 16px; font-family: {GROTESK}; font-size: 13px; box-shadow: none; }}
 button.game-next:hover {{ background: {p['surface2']}; }}
+button.game-next:disabled, button.game-next:disabled:hover {{ background: transparent; color: {p['faint']}; }}
+button.filter-chip {{
+  background: transparent; color: {p['muted']};
+  border: 1px solid {p['border']}; border-radius: 9999px;
+  padding: 3px 10px; min-height: 0;
+  font-family: {MONO}; font-size: 10px;
+  letter-spacing: 1.4px; box-shadow: none;
+}}
+button.filter-chip:hover {{ color: {p['text']}; border-color: {p['border2']}; }}
+button.filter-chip-on, button.filter-chip-on:hover {{
+  background: {p['text']}; color: {p['bg']};
+  border-color: {p['text']};
+}}
+.deck-meta {{
+  color: {p['faint']}; font-family: {MONO};
+  font-size: 10px; letter-spacing: 0.6px;
+}}
+.settings-kicker {{
+  color: {p['muted']}; font-family: {MONO};
+  font-size: 10px; letter-spacing: 2.2px;
+}}
+button.settings-action {{
+  background: {p['surface2']}; background-image: none;
+  color: {p['text']};
+  border: 1px solid {p['border']}; border-radius: 999px;
+  padding: 7px 14px; font-family: {GROTESK}; font-size: 13px;
+  box-shadow: none;
+}}
+button.settings-action:hover {{ border-color: {p['border2']}; }}
+button.settings-action:disabled {{ background: transparent; background-image: none;
+  color: {p['faint']}; border-color: {p['border']}; }}
+.settings-box {{ background: {p['surface']}; }}
+.panel notebook {{ background: {p['surface']}; background-image: none; }}
+.panel notebook stack {{ background: {p['surface']}; }}
 button.icon-btn {{ background: transparent; color: {p['body']}; border: none; border-radius: 9999px; min-width: 32px; min-height: 32px; padding: 4px; font-family: {GROTESK}; font-size: 15px; box-shadow: none; }}
 button.icon-btn:hover {{ background: {p['surface2']}; color: {p['text']}; }}
 button.quiet {{ color: {p['muted']}; background: transparent; border: none; box-shadow: none; font-family: {GROTESK}; font-size: 15px; padding: 4px 8px; }}
@@ -1424,6 +1462,20 @@ MODE_CAPTIONS = {
 "flash": ("THINKING", "Thinking"),
     "build": ("BUILD ON", "Writing code"),
 }
+
+# The content pane's quick filters. `game` is the pack type behind
+# the user-facing "Quiz" chip; "all" is the unfiltered deck.
+CONTENT_FILTERS = ("all", "news", "fact", "game", "idea")
+CONTENT_FILTER_LABELS = {"all": "All", "news": "News",
+                         "fact": "Facts", "game": "Quiz",
+                         "idea": "Ideas"}
+CONTENT_TYPE_UNITS = {"news": "news items", "fact": "facts",
+                      "game": "quizzes", "idea": "ideas"}
+
+
+def content_filter_types(key: str):
+    """Filter chip key -> engine type set (None = all)."""
+    return None if key == "all" else {key}
 
 
 WEB_TOOLS = {"web_search", "web_fetch"}
@@ -1532,7 +1584,9 @@ def creator_command(env=None) -> list:
     (the mission prompt is appended by the caller).
 
     Settings (environment):
-      AAT_CREATOR_PROVIDER  muse (default) | codex | custom
+      AAT_CREATOR_PROVIDER  muse (default) | codex | kilo |
+                            llm | custom (llm = the app's own
+                            harness, backend/app/llm_creator.py)
       AAT_CREATOR_MODEL     model id for muse/codex (CLI default
                             when unset)
       AAT_CREATOR_CMD       full command for provider=custom
@@ -1566,6 +1620,14 @@ def creator_command(env=None) -> list:
             argv.append("--dangerously-bypass-approvals-and-sandbox")
         else:
             argv += ["-s", sandbox]
+        if model:
+            argv += ["-m", model]
+        return argv
+    if provider == "llm":
+        raise ValueError("provider=llm runs the built-in "
+                         "harness, not a subprocess")
+    if provider == "kilo":
+        argv = ["kilo", "run"]
         if model:
             argv += ["-m", model]
         return argv
@@ -1818,6 +1880,9 @@ def run_gui(project_arg: str | None) -> int:
             return {}
 
     _prefs = _load_prefs()
+    _saved_filter = _prefs.get("content_filter")
+    _initial_filter = _saved_filter if _saved_filter \
+        in CONTENT_FILTER_LABELS else "all"
     _env_theme = os.environ.get("AAT_THEME", "").lower()
     THEME = {"mode": _env_theme if _env_theme in ("dark", "light")
              else (_prefs.get("theme_mode")
@@ -1848,6 +1913,9 @@ def run_gui(project_arg: str | None) -> int:
             _prefs["theme_mode"] = THEME["mode"]
             if S.get("view_mode"):
                 _prefs["view_mode"] = S["view_mode"]
+            if not _tour_raw and \
+                    S.get("content_filter") in CONTENT_FILTER_LABELS:
+                _prefs["content_filter"] = S["content_filter"]
             PREFS_PATH.write_text(_json.dumps(_prefs))
         except Exception:
             pass
@@ -1926,13 +1994,76 @@ def run_gui(project_arg: str | None) -> int:
         project_content_dir=Path(project_path) / ".aat" / "content")
     threading.Thread(target=selector.index, daemon=True).start()
 
+    def _set_content_note(text: str):
+        """One note in both places the pane can show it: the footer
+        under a card, and the empty state (e.g. while the researcher
+        is creating the first pack of a filtered type)."""
+        if S.get("game_fb") is not None:
+            S["game_fb"].set_text(text)
+        if S.get("empty_fb") is not None:
+            S["empty_fb"].set_text(text)
+
     # -- creator agent: the app may launch the content
-    # researcher itself (Muse is the configured creator today).
+    # researcher itself (a configured CLI, or the built-in
+    # harness driving an arbitrary LLM endpoint).
+    def _creator_busy():
+        return S.get("_creator_proc") is not None \
+            or bool(S.get("_creator_llm"))
+
+    def _spawn_llm_creator(want_type, root, reason, prompt):
+        from backend.app import llm_creator
+        base = os.environ.get("AAT_CREATOR_LLM_BASE_URL", "")
+        key = os.environ.get("AAT_CREATOR_LLM_API_KEY", "")
+        model = os.environ.get("AAT_CREATOR_LLM_MODEL", "")
+        missing = [n for n, v in (
+            ("AAT_CREATOR_LLM_BASE_URL", base),
+            ("AAT_CREATOR_LLM_API_KEY", key),
+            ("AAT_CREATOR_LLM_MODEL", model)) if not v]
+        if missing:
+            core.dlog("content", "creator misconfigured: "
+                                 "missing " + ", ".join(missing))
+            _set_content_note(
+                "Creator (llm) needs " + ", ".join(missing))
+            return False
+        rdir = Path(root) / ".aat" / "research"
+        S["_creator_llm"] = True
+        S["_creator_type"] = want_type
+        S["btn_idea"].set_sensitive(False)
+        _set_content_note(
+            f"Creating a {want_type} for this project — the "
+            "researcher agent is working…")
+        core.dlog("content",
+                  f"creator spawned ({reason}): {want_type} "
+                  f"for {root} via llm {model}")
+
+        def _log(line):
+            try:
+                rdir.mkdir(parents=True, exist_ok=True)
+                with open(rdir / "creator.log", "a",
+                          encoding="utf-8") as fh:
+                    fh.write(str(line) + "\n")
+            except Exception:
+                pass
+
+        def _run():
+            try:
+                llm_creator.run_mission(
+                    base, key, model, prompt, root, RES_ROOT,
+                    log=_log)
+                code = 0
+            except Exception as exc:
+                _log(f"llm creator failed: {exc}")
+                code = 1
+            GLib.idle_add(_creator_done, str(root), code)
+
+        threading.Thread(target=_run, daemon=True).start()
+        return True
+
     def spawn_creator(want_type, root, reason):
-        if S.get("_creator_proc") is not None:
+        if _creator_busy():
             return False
         if time.time() - S.get("_creator_fail_at", 0) < 60:
-            S["game_fb"].set_text(
+            _set_content_note(
                 "The researcher just failed — see "
                 ".aat/research/creator.log; retry in a few "
                 "seconds.")
@@ -1941,14 +2072,18 @@ def run_gui(project_arg: str | None) -> int:
             core.dlog("content", "creator disabled (AAT_CREATOR=off)")
             return False
         root = str(root)
+        task = (core.agent_state or {}).get("task") or ""
+        prompt = creator_task_text(RES_ROOT, root, want_type, task)
+        if (os.environ.get("AAT_CREATOR_PROVIDER")
+                or "").strip().lower() == "llm":
+            return _spawn_llm_creator(want_type, root, reason,
+                                      prompt)
         try:
             cmd = creator_command()
         except ValueError as exc:
             core.dlog("content", f"creator misconfigured: {exc}")
-            S["game_fb"].set_text(f"Creator misconfigured: {exc}")
+            _set_content_note(f"Creator misconfigured: {exc}")
             return False
-        task = (core.agent_state or {}).get("task") or ""
-        prompt = creator_task_text(RES_ROOT, root, want_type, task)
         rdir = Path(root) / ".aat" / "research"
         try:
             rdir.mkdir(parents=True, exist_ok=True)
@@ -1967,7 +2102,7 @@ def run_gui(project_arg: str | None) -> int:
         S["_creator_proc"] = proc
         S["_creator_type"] = want_type
         S["btn_idea"].set_sensitive(False)
-        S["game_fb"].set_text(
+        _set_content_note(
             f"Creating a {want_type} for this project — the "
             "researcher agent is working…")
         core.dlog("content",
@@ -1990,6 +2125,7 @@ def run_gui(project_arg: str | None) -> int:
 
     def _creator_done(root, code):
         S["_creator_proc"] = None
+        S["_creator_llm"] = False
         S["btn_idea"].set_sensitive(True)
         core.dlog("content", f"creator finished (exit {code})")
         if code != 0:
@@ -2010,7 +2146,7 @@ def run_gui(project_arg: str | None) -> int:
                     or "").lower() == "codex":
                 hint = (" Tip: AAT_CREATOR_CODEX_SANDBOX=bypass "
                         "makes Codex work in this environment.")
-            S["game_fb"].set_text(
+            _set_content_note(
                 "The researcher could not run"
                 + (f": {reason}" if reason else "")
                 + " (log: .aat/research/creator.log)." + hint)
@@ -2032,18 +2168,26 @@ def run_gui(project_arg: str | None) -> int:
                     Path(root) / ".aat" / "content")
                 pack = engine.pack_by_id(fresh[-1]["id"])
             if pack is not None:
+                # The delivery may be another type than the chip
+                # the user is on (the bulb picks, too): follow the
+                # new card so the pane never contradicts its
+                # filter.
+                ptype = ce.resolve_type(pack)
+                if S.get("content_filter") not in ("all", ptype):
+                    set_content_filter(ptype, serve=False)
+                _sync_filter_chips()
                 serve_game(True, force_pack=pack)
-                S["game_fb"].set_text(
+                _set_content_note(
                     "New project content: "
                     + pack.get("title", pack["id"]))
                 return False
-            S["game_fb"].set_text(
+            _set_content_note(
                 "The researcher deposited "
                 + fresh[-1]["id"]
                 + ", but it failed to load — run test_game.py "
                   "on it.")
             return False
-        S["game_fb"].set_text(
+        _set_content_note(
             "The researcher finished without new content "
             "(log: .aat/research/creator.log).")
         return False
@@ -2139,7 +2283,25 @@ def run_gui(project_arg: str | None) -> int:
                "left_override": None, "_agent_busy": False,
                "_busy_since": None, "_busy_end": None,
                "_busy_since_keep": None,
+               "content_filter": _initial_filter,
+               "content_trail": [], "content_pos": -1,
+               "_page_at": 0.0, "_scroll_acc": 0.0,
+               "_reset_armed": False,
                "_square_mode": "blinky"}
+
+    # Tour mode pins one type; otherwise a persisted chip wins.
+    # A filter whose catalogue is empty falls back to All — empty
+    # filters are an explicit click-to-create action, not a boot
+    # surprise.
+    if _only_types:
+        S["content_filter"] = next(iter(_only_types))
+    elif S["content_filter"] != "all" and \
+            engine.type_counts().get(S["content_filter"], 0) == 0:
+        core.dlog("content",
+                  f"filter {S['content_filter']} has no content; "
+                  "falling back to All")
+        S["content_filter"] = "all"
+    engine.set_type_filter(content_filter_types(S["content_filter"]))
 
     # ---------------- end-of-session result squares ----------------
     class ResultSquare(Gtk.DrawingArea):
@@ -2976,21 +3138,54 @@ def run_gui(project_arg: str | None) -> int:
         # Left pane: the terminal, or — while the agent works — the
         # companion content space that earns the user's attention.
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
-                          spacing=10)
+                          spacing=0)
         content.get_style_context().add_class("scene")
         content.set_hexpand(True)
         content.set_vexpand(True)
         S["game_ctl"] = {"game": None, "answered": False,
                          "chosen": None, "rects": {}, "radii": [],
                          "center": (0.0, 0.0), "btns": {}}
+
+        # Fixed header: the type chips, the deck size and the
+        # creator bulb stay put while cards page underneath.
+        top_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                          spacing=6)
+        top_row.set_margin_top(18)
+        top_row.set_margin_bottom(4)
+        top_row.set_margin_start(34)
+        top_row.set_margin_end(34)
+        S["filter_btns"] = {}
+        for key in CONTENT_FILTERS:
+            chip = Gtk.Button(
+                label=CONTENT_FILTER_LABELS[key].upper())
+            chip.get_style_context().add_class("filter-chip")
+            chip.set_relief(Gtk.ReliefStyle.NONE)
+            chip.connect("clicked",
+                         lambda _b, k=key: set_content_filter(k))
+            top_row.pack_start(chip, False, False, 0)
+            S["filter_btns"][key] = chip
+        S["deck_meta"] = Gtk.Label(label="")
+        S["deck_meta"].get_style_context().add_class("deck-meta")
+        top_row.pack_start(S["deck_meta"], False, False, 4)
+        S["btn_idea"] = Gtk.Button()
+        S["btn_idea"].set_tooltip_text(
+            "Pick what content to generate next")
+        S["btn_idea"].get_style_context().add_class("icon-btn")
+        bulb = Gtk.DrawingArea()
+        bulb.set_size_request(16, 16)
+        bulb.connect("draw", draw_bulb)
+        S["btn_idea"].add(bulb)
+        S["btn_idea"].connect("clicked",
+                              lambda *_: idea_pick_type())
+        top_row.pack_end(S["btn_idea"], False, False, 0)
+        content.pack_start(top_row, False, False, 0)
+
         game_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
                            spacing=8)
-        game_box.set_margin_top(28)
-        game_box.set_margin_bottom(22)
+        game_box.set_margin_top(10)
+        game_box.set_margin_bottom(18)
         game_box.set_margin_start(34)
         game_box.set_margin_end(34)
-        top_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        game_box.pack_start(top_row, False, False, 0)
         S["game_title"] = Gtk.Label(label="")
         S["game_title"].get_style_context().add_class("content-soon")
         S["game_title"].set_xalign(0)
@@ -3001,7 +3196,7 @@ def run_gui(project_arg: str | None) -> int:
         S["game_hint"].set_xalign(0)
         game_box.pack_start(S["game_hint"], False, False, 6)
         S["game_scene"] = Gtk.DrawingArea()
-        S["game_scene"].set_size_request(-1, 300)
+        S["game_scene"].set_size_request(-1, 260)
         S["game_scene"].set_hexpand(True)
         S["game_scene"].set_vexpand(True)
         S["game_scene"].connect("draw", draw_game_scene)
@@ -3024,15 +3219,22 @@ def run_gui(project_arg: str | None) -> int:
             orientation=Gtk.Orientation.VERTICAL, spacing=8)
         game_box.pack_start(S["game_choices"], False, False, 2)
         fb_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
-                         spacing=12)
+                         spacing=10)
         S["game_fb"] = Gtk.Label(label="")
         S["game_fb"].get_style_context().add_class("content-body")
         S["game_fb"].set_xalign(0)
         S["game_fb"].set_line_wrap(True)
         fb_row.pack_start(S["game_fb"], True, True, 0)
-        S["game_next"] = Gtk.Button(label="Next")
+        S["game_next"] = Gtk.Button(label="Next \u2193")
         S["game_next"].get_style_context().add_class("game-next")
+        S["game_next"].set_tooltip_text("Next card (swipe down)")
         S["game_next"].connect("clicked", lambda *_: serve_game(True))
+        S["game_prev"] = Gtk.Button(label="\u2191 Prev")
+        S["game_prev"].get_style_context().add_class("game-next")
+        S["game_prev"].set_tooltip_text("Previous card (swipe up)")
+        S["game_prev"].set_sensitive(False)
+        S["game_prev"].connect(
+            "clicked", lambda *_: serve_game(True, step=-1))
         S["btn_open"] = Gtk.Button(label="Open link \u2197")
         S["btn_open"].get_style_context().add_class("game-next")
         S["btn_open"].connect("clicked", lambda *_: game_open_link())
@@ -3050,22 +3252,12 @@ def run_gui(project_arg: str | None) -> int:
         S["btn_dislike"].connect(
             "clicked", lambda *_: game_react("dislike"))
         fb_row.pack_end(S["game_next"], False, False, 0)
+        fb_row.pack_end(S["game_prev"], False, False, 0)
         fb_row.pack_end(S["btn_open"], False, False, 0)
         fb_row.pack_end(S["btn_save"], False, False, 0)
         fb_row.pack_end(S["btn_like"], False, False, 0)
         fb_row.pack_end(S["btn_dislike"], False, False, 0)
         game_box.pack_start(fb_row, False, False, 8)
-        S["btn_idea"] = Gtk.Button()
-        S["btn_idea"].set_tooltip_text(
-            "Pick what content to generate next")
-        S["btn_idea"].get_style_context().add_class("icon-btn")
-        bulb = Gtk.DrawingArea()
-        bulb.set_size_request(16, 16)
-        bulb.connect("draw", draw_bulb)
-        S["btn_idea"].add(bulb)
-        S["btn_idea"].connect("clicked",
-                              lambda *_: idea_pick_type())
-        top_row.pack_end(S["btn_idea"], False, False, 0)
         S["game_box"] = game_box
         S["content_box"] = content
         S["content_top_row"] = top_row
@@ -3079,15 +3271,40 @@ def run_gui(project_arg: str | None) -> int:
                             spacing=10)
         empty_box.set_halign(Gtk.Align.CENTER)
         empty_box.set_valign(Gtk.Align.CENTER)
-        soon = Gtk.Label(label="Soon content will appear")
-        soon.get_style_context().add_class("content-soon")
-        soon_sub = Gtk.Label(
+        S["game_empty_title"] = Gtk.Label(
+            label="Soon content will appear")
+        S["game_empty_title"].get_style_context().add_class(
+            "content-soon")
+        S["game_empty_title"].set_justify(Gtk.Justification.CENTER)
+        S["game_empty_title"].set_xalign(0.5)
+        S["game_empty_title"].set_line_wrap(True)
+        S["game_empty_title"].set_max_width_chars(40)
+        S["game_empty_sub"] = Gtk.Label(
             label="While the agent works, this space is yours.")
-        soon_sub.get_style_context().add_class("content-sub")
-        empty_box.pack_start(soon, False, False, 0)
-        empty_box.pack_start(soon_sub, False, False, 0)
+        S["game_empty_sub"].get_style_context().add_class(
+            "content-sub")
+        S["game_empty_sub"].set_justify(Gtk.Justification.CENTER)
+        S["game_empty_sub"].set_xalign(0.5)
+        S["game_empty_sub"].set_line_wrap(True)
+        S["game_empty_sub"].set_max_width_chars(52)
+        S["empty_fb"] = Gtk.Label(label="")
+        S["empty_fb"].get_style_context().add_class("content-body")
+        S["empty_fb"].set_xalign(0.5)
+        S["empty_fb"].set_justify(Gtk.Justification.CENTER)
+        S["empty_fb"].set_line_wrap(True)
+        S["empty_fb"].set_max_width_chars(56)
+        empty_box.pack_start(S["game_empty_title"], False, False, 0)
+        empty_box.pack_start(S["game_empty_sub"], False, False, 0)
+        empty_box.pack_start(S["empty_fb"], False, False, 0)
         S["game_empty"] = empty_box
         content.pack_start(empty_box, True, False, 0)
+        # Shorts-like paging: wheel / two-finger scroll at an edge and
+        # touch swipes move vertically through the deck.
+        game_scroll.connect("scroll-event", on_content_scroll)
+        content.connect("scroll-event", on_content_scroll)
+        swipe = Gtk.GestureSwipe.new(content)
+        swipe.connect("swipe", on_content_swipe)
+        S["content_swipe"] = swipe
         S["left_stack"] = Gtk.Stack()
         S["left_stack"].set_transition_type(
             Gtk.StackTransitionType.CROSSFADE)
@@ -3223,6 +3440,7 @@ def run_gui(project_arg: str | None) -> int:
         settings_box.set_margin_top(14)
         settings_box.set_margin_start(12)
         settings_box.set_margin_end(12)
+        settings_box.set_margin_bottom(14)
         S["set_autoshow"] = Gtk.CheckButton(label="Auto-show overlay while the agent works")
         S["set_autoshow"].set_active(True)
         settings_box.pack_start(S["set_autoshow"], False, False, 0)
@@ -3232,7 +3450,35 @@ def run_gui(project_arg: str | None) -> int:
         S["set_threshold"].set_value(5)
         row.pack_start(S["set_threshold"], False, False, 0)
         settings_box.pack_start(row, False, False, 0)
-        nb.append_page(settings_box, Gtk.Label(label="Settings"))
+        settings_box.pack_start(
+            Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL),
+            False, False, 10)
+        kicker = Gtk.Label(label="WATCHED CONTENT")
+        kicker.get_style_context().add_class("settings-kicker")
+        kicker.set_xalign(0)
+        settings_box.pack_start(kicker, False, False, 0)
+        S["set_hist"] = Gtk.Label(label="")
+        S["set_hist"].get_style_context().add_class("content-sub")
+        S["set_hist"].set_xalign(0)
+        S["set_hist"].set_line_wrap(True)
+        S["set_hist"].set_max_width_chars(38)
+        settings_box.pack_start(S["set_hist"], False, False, 0)
+        S["set_reset"] = Gtk.Button(label="Reset watched history")
+        S["set_reset"].get_style_context().add_class("settings-action")
+        S["set_reset"].set_halign(Gtk.Align.START)
+        S["set_reset"].connect(
+            "clicked", lambda *_: reset_watched_history())
+        settings_box.pack_start(S["set_reset"], False, False, 0)
+        S["set_reset_fb"] = Gtk.Label(label="")
+        S["set_reset_fb"].get_style_context().add_class("content-sub")
+        S["set_reset_fb"].set_xalign(0)
+        S["set_reset_fb"].set_line_wrap(True)
+        S["set_reset_fb"].set_max_width_chars(38)
+        settings_box.pack_start(S["set_reset_fb"], False, False, 0)
+        settings_surface = Gtk.EventBox()
+        settings_surface.get_style_context().add_class("settings-box")
+        settings_surface.add(settings_box)
+        nb.append_page(settings_surface, Gtk.Label(label="Settings"))
         panel.pack_start(nb, True, True, 0)
         S["panel"] = panel
         panel.set_halign(Gtk.Align.END)
@@ -3258,6 +3504,8 @@ def run_gui(project_arg: str | None) -> int:
             None, GLib.SpawnFlags.DEFAULT, None, None, -1, None,
             on_spawn, None)
         vte.grab_focus()
+        _sync_filter_chips()
+        _refresh_settings_history()
         serve_game(False)
 
         # Game tour (review aid): AAT_TOUR=<seconds> opens the
@@ -3552,6 +3800,105 @@ def run_gui(project_arg: str | None) -> int:
                 ctx.remove_class("react-on")
         core.dlog("content", f"reaction {kind} on {game['id']}")
 
+    def _active_types():
+        return content_filter_types(S.get("content_filter", "all"))
+
+    def _sync_filter_chips():
+        """Chip state, deck size and tooltips for the current filter."""
+        if not S.get("filter_btns"):
+            return
+        counts = engine.type_counts()
+        total = sum(counts.values())
+        seen, _ = engine.progress()
+        active = S.get("content_filter", "all")
+        for key, chip in S["filter_btns"].items():
+            ctx = chip.get_style_context()
+            if key == active:
+                ctx.add_class("filter-chip-on")
+            else:
+                ctx.remove_class("filter-chip-on")
+            n = total if key == "all" else counts.get(key, 0)
+            tip = (f"All content · {n} packs" if key == "all"
+                   else f"{CONTENT_FILTER_LABELS[key]} · "
+                        f"{n} available")
+            chip.set_tooltip_text(tip)
+        if active == "all":
+            S["deck_meta"].set_text(f"{total} items · {seen} seen")
+        else:
+            n = counts.get(active, 0)
+            if n == 0:
+                S["deck_meta"].set_text("none yet")
+            else:
+                unit = CONTENT_TYPE_UNITS.get(active, "items")
+                S["deck_meta"].set_text(
+                    f"{n} {unit} · {seen} seen")
+
+    def _show_empty(title: str, sub: str, note: str = ""):
+        S["game_scroll"].hide()
+        S["game_empty"].show_all()
+        S["game_empty_title"].set_text(title)
+        S["game_empty_sub"].set_text(sub)
+        S["empty_fb"].set_text(note)
+
+    def _empty_copy(kind: str):
+        noun = {"news": "news item", "fact": "fact card",
+                "game": "quiz", "idea": "idea"}.get(kind, "card")
+        return (f"No {CONTENT_TYPE_UNITS.get(kind, 'content')} yet",
+                "The researcher agent can create the first "
+                f"{noun} for this project. It will appear here "
+                "when it is ready.")
+
+    def _offer_creation(kind: str):
+        """An empty filter is a request to create that content."""
+        title, sub = _empty_copy(kind)
+        _show_empty(title, sub)
+        if _tour_raw:
+            _set_content_note(
+                "Tour mode: no creator is spawned from a preview.")
+            return
+        _set_content_note("")
+        ok = spawn_creator(kind, core._work_root(),
+                           f"filter-{kind}")
+        if ok:
+            core.dlog("content",
+                      f"filter {kind}: no content, creator asked")
+            return
+        if _creator_busy():
+            _set_content_note("The researcher is already creating "
+                              "content for this project…")
+        elif not (S.get("game_fb").get_text() or "").strip():
+            _set_content_note(
+                "Could not start the researcher — see the "
+                "decision log ([content] creator …).")
+
+    def set_content_filter(key: str, serve: bool = True):
+        """The All / News / Facts / Quiz / Ideas chips: one at a time."""
+        if key not in CONTENT_FILTER_LABELS:
+            return
+        active = S.get("content_filter", "all")
+        if key == active:
+            if serve and not engine.packs_for():
+                _offer_creation(key)
+            return
+        S["content_filter"] = key
+        engine.set_type_filter(_active_types())
+        S["_pending_pick"] = None
+        S["content_trail"] = []
+        S["content_pos"] = -1
+        S["_scroll_acc"] = 0.0
+        _sync_filter_chips()
+        _save_prefs()
+        available = len(engine.packs_for())
+        core.dlog("content",
+                  f"filter -> {CONTENT_FILTER_LABELS[key]} "
+                  f"({available} packs)")
+        if not serve:
+            return
+        if available == 0:
+            _offer_creation(key)
+            return
+        serve_game(True)
+
     def _kick_pick():
         """Prefetch the next contextual pick off the GTK thread.
         pick() embeds with the local model and asks System-1 —
@@ -3560,15 +3907,20 @@ def run_gui(project_arg: str | None) -> int:
         if S.get("_pick_busy") or not selector.indexed:
             return
         S["_pick_busy"] = True
+        types = _active_types()
 
         def _work():
             try:
                 ctx = _content_context()
                 exclude = set(engine._served)
+                exclude.update(
+                    g.get("id") for g in S.get("content_trail") or []
+                    if g)
                 pending = S.get("_pending_pick")
                 if pending:
                     exclude.add(pending[0])
-                picked = selector.pick(ctx, project_path, exclude)
+                picked = selector.pick(ctx, project_path, exclude,
+                                       types)
                 if picked:
                     S["_pending_pick"] = picked
                     core.dlog("content",
@@ -3584,44 +3936,51 @@ def run_gui(project_arg: str | None) -> int:
 
         threading.Thread(target=_work, daemon=True).start()
 
-    def serve_game(advance=True, force_pack=None):
+    def _fade_content_in():
+        """A short, calm fade when a new card takes the pane."""
+        box = S.get("game_box")
+        if box is None or not S["overlay_on"]:
+            return
+        gen = S.get("_fade_gen", 0) + 1
+        S["_fade_gen"] = gen
+        steps = 9
+
+        def _step(i):
+            if S.get("_fade_gen") != gen:
+                return False
+            if i > steps:
+                box.set_opacity(1.0)
+                return False
+            box.set_opacity(0.35 + 0.65 * i / steps)
+            GLib.timeout_add(16, lambda: _step(i + 1))
+            return False
+
+        box.set_opacity(0.35)
+        GLib.timeout_add(16, lambda: _step(1))
+
+    def _render_game(game, animate: bool = False):
         ctl = S["game_ctl"]
-        game = None
-        if advance:
-            _close_previous_serve()
-            if force_pack is not None:
-                game = engine.serve_specific(force_pack)
-                core.dlog("content",
-                          f"serving {force_pack['id']} "
-                          "(creator delivery)")
-            pending = S.pop("_pending_pick", None)
-            if pending:
-                pid, source, sim = pending
-                pack = engine.pack_by_id(pid)
-                if pack is not None and pid not in engine._served:
-                    game = engine.serve_specific(pack)
-                    core.dlog("content",
-                              f"selector -> {pid} [{source}, "
-                              f"sim {sim:.2f}]")
-            if game is None and force_pack is None:
-                game = engine.next_game()
-            _kick_pick()
-            if game is not None and not _tour_raw:
-                ctl["serving_id"] = game["id"]
-                ctl["serving_at"] = time.time()
-                vstore.record_serve(game["id"], project_path)
-        else:
-            game = engine.current()
         ctl.update(game=game, answered=False, chosen=None, btns={},
                    t0=time.time(), verdict=None, verdict_t0=0.0)
         for btn in (S["btn_like"], S["btn_dislike"]):
             btn.get_style_context().remove_class("react-on")
+        pos = S.get("content_pos", -1)
+        if S.get("game_prev") is not None:
+            S["game_prev"].set_sensitive(pos > 0)
         if game is None:
-            S["game_scroll"].hide()
-            S["game_empty"].show_all()
+            kind = S.get("content_filter", "all")
+            if kind != "all" and not engine.packs_for():
+                _show_empty(*_empty_copy(kind))
+            else:
+                _show_empty(
+                    "Soon content will appear",
+                    "While the agent works, this space is yours.")
+            _sync_filter_chips()
             return
         S["game_empty"].hide()
         S["game_scroll"].show_all()
+        adjust = S["game_scroll"].get_vadjustment()
+        adjust.set_value(0)
         ptype = game.get("type", "game")
         S["game_title"].set_text(game.get("title", ""))
         S["game_hint"].set_text(game.get("hint", ""))
@@ -3643,19 +4002,16 @@ def run_gui(project_arg: str | None) -> int:
             S["game_choices"].pack_start(btn, False, False, 0)
             btn.show()
         S["game_fb"].set_text("")
+        S["empty_fb"].set_text("")
         _fb_ctx = S["game_fb"].get_style_context()
         _fb_ctx.remove_class("fb-ok")
         _fb_ctx.remove_class("fb-no")
         S["btn_save"].set_sensitive(True)
-        # Type drives the actions: games answer for points and
-        # get Next after answering; facts/news skip freely;
+        # Type drives the actions: quizzes answer for points (Next
+        # skips either way, like a Short); facts/news skip freely;
         # news opens its link; ideas can be saved for an agent.
-        S["game_next"].set_label(
-            "Next" if ptype == "game" else "Skip / Next \u2192")
-        if ptype == "game":
-            S["game_next"].hide()
-        else:
-            S["game_next"].show()
+        S["game_next"].set_label("Next \u2193")
+        S["game_next"].show()
         if ptype == "news" and game.get("link"):
             S["btn_open"].show()
         else:
@@ -3667,7 +4023,204 @@ def run_gui(project_arg: str | None) -> int:
         S["scene_ev"].set_visible(bool(game.get("scene")
                                        or game.get("_paint")))
         S["game_scene"].queue_draw()
+        _sync_filter_chips()
+        if animate:
+            _fade_content_in()
         core.dlog("content", f"serving {game.get('id')}")
+
+    def serve_game(advance=True, force_pack=None, step=1):
+        """Serve a card. `step=-1` walks back through the cards this
+        session already showed (Shorts-like up/down paging); a new
+        pick continues from the current position."""
+        ctl = S["game_ctl"]
+        trail = S.setdefault("content_trail", [])
+        pos = S.get("content_pos", -1)
+        game = None
+        if not advance:
+            game = engine.current()
+            if game is not None:
+                trail = [game]
+                pos = 0
+            S["content_trail"] = trail
+            S["content_pos"] = pos
+            _render_game(game)
+            return
+        if step < 0 and pos <= 0:
+            return  # already at the oldest card in this session
+        if force_pack is not None:
+            _close_previous_serve()
+            game = engine.serve_specific(force_pack)
+            trail = trail[:pos + 1] if pos >= 0 else []
+            trail.append(game)
+            pos = len(trail) - 1
+            core.dlog("content",
+                      f"serving {force_pack['id']} "
+                      "(creator delivery)")
+        elif step < 0:
+            if pos > 0:
+                _close_previous_serve()
+                pos -= 1
+                game = engine.focus(trail[pos])
+                core.dlog("content",
+                          f"history prev -> {game.get('id')}")
+        elif pos >= 0 and pos < len(trail) - 1:
+            _close_previous_serve()
+            pos += 1
+            game = engine.focus(trail[pos])
+            core.dlog("content",
+                      f"history next -> {game.get('id')}")
+        else:
+            _close_previous_serve()
+            pending = S.pop("_pending_pick", None)
+            if pending:
+                pid, source, sim = pending
+                pack = engine.pack_by_id(pid)
+                if pack is not None and pid not in engine._served \
+                        and engine.matches(pack):
+                    game = engine.serve_specific(pack)
+                    core.dlog("content",
+                              f"selector -> {pid} [{source}, "
+                              f"sim {sim:.2f}]")
+            if game is None:
+                game = engine.next_game()
+            _kick_pick()
+            if game is not None:
+                trail = trail[:pos + 1] if pos >= 0 else []
+                trail.append(game)
+                pos = len(trail) - 1
+        S["content_trail"] = trail
+        S["content_pos"] = pos
+        if game is not None and not _tour_raw:
+            ctl["serving_id"] = game["id"]
+            ctl["serving_at"] = time.time()
+            vstore.record_serve(game["id"], project_path)
+        _render_game(game, animate=(game is not None
+                                    and step >= 0
+                                    and S["overlay_on"]))
+
+    def _page_step(step: int):
+        if not _content_visible():
+            return
+        if S["game_ctl"].get("game") is None:
+            return
+        now = time.time()
+        if now - S.get("_page_at", 0.0) < 0.35:
+            return
+        if step < 0 and S.get("content_pos", 0) <= 0:
+            return
+        S["_page_at"] = now
+        _sync_filter_chips()
+        serve_game(True, step=step)
+
+    def on_content_scroll(_widget, event):
+        """Wheel / two-finger swipe: page at the edges, scroll inside."""
+        if not _content_visible() or S["game_ctl"].get("game") is None:
+            return False
+        if event.state & (Gdk.ModifierType.CONTROL_MASK
+                          | Gdk.ModifierType.SHIFT_MASK
+                          | Gdk.ModifierType.MOD1_MASK):
+            return False
+        if event.direction == Gdk.ScrollDirection.UP:
+            dy = -1.0
+        elif event.direction == Gdk.ScrollDirection.DOWN:
+            dy = 1.0
+        elif event.direction == Gdk.ScrollDirection.SMOOTH:
+            dy = float(event.delta_y)
+        else:
+            return False
+        if abs(dy) < 1e-6:
+            return False
+        adj = S["game_scroll"].get_vadjustment()
+        upper = adj.get_upper()
+        page = adj.get_page_size()
+        value = adj.get_value()
+        if upper - page > 2:
+            at_top = value <= 1.0
+            at_bottom = value >= upper - page - 1.0
+            if not ((dy > 0 and at_bottom)
+                    or (dy < 0 and at_top)):
+                S["_scroll_acc"] = 0.0
+                return False
+        acc = S.get("_scroll_acc", 0.0) + dy
+        S["_scroll_acc"] = acc
+        if abs(acc) < 0.75:
+            return True  # consume the small trackpad steps at an edge
+        S["_scroll_acc"] = 0.0
+        _page_step(1 if acc > 0 else -1)
+        return True
+
+    def on_content_swipe(_gesture, velocity_x, velocity_y):
+        if abs(velocity_y) < 320 \
+                or abs(velocity_y) < abs(velocity_x) * 1.4:
+            return
+        _page_step(1 if velocity_y < 0 else -1)
+
+    def _refresh_settings_history():
+        if not S.get("set_hist"):
+            return
+        total = len(engine.packs)
+        watched = len(engine._served)
+        S["set_hist"].set_text(
+            f"{watched} of {total} packs watched. Resetting makes "
+            "the deck unseen again; likes and dislikes are kept.")
+        if S.get("set_reset") is not None:
+            S["set_reset"].set_sensitive(
+                watched > 0 or vstore.serve_count() > 0)
+
+    def reset_watched_history():
+        """Settings action: forget the watched deck and serve log."""
+        if _tour_raw:
+            S["set_reset_fb"].set_text(
+                "Tour mode: watching history is sandboxed and "
+                "cannot be reset.")
+            return
+        if not engine._served and vstore.serve_count() == 0:
+            S["set_reset_fb"].set_text("Nothing has been watched yet.")
+            return
+        if not S.get("_reset_armed"):
+            S["_reset_armed"] = True
+            S["set_reset"].set_label("Click again to reset")
+            S["set_reset_fb"].set_text(
+                "This clears the watched deck; likes are kept.")
+
+            def _disarm():
+                if S.get("_reset_armed"):
+                    S["_reset_armed"] = False
+                    S["set_reset"].set_label(
+                        "Reset watched history")
+                    S["set_reset_fb"].set_text("")
+                return False
+
+            GLib.timeout_add_seconds(6, _disarm)
+            return
+        S["_reset_armed"] = False
+        S["set_reset"].set_label("Reset watched history")
+        _close_previous_serve()
+        n = engine.reset_history()
+        try:
+            rows = vstore.reset_serves()
+        except Exception as exc:
+            rows = 0
+            core.dlog("content",
+                      f"serve history reset failed: {exc}"[:120])
+        S["content_trail"] = []
+        S["content_pos"] = -1
+        S["_pending_pick"] = None
+        S["_scroll_acc"] = 0.0
+        if S.get("game_prev") is not None:
+            S["game_prev"].set_sensitive(False)
+        _sync_filter_chips()
+        _refresh_settings_history()
+        packs_word = "pack" if n == 1 else "packs"
+        S["set_reset_fb"].set_text(
+            f"Watched history reset: {n} {packs_word} unseen "
+            "again. Likes and dislikes are kept.")
+        _set_content_note(
+            f"Watched history reset — {n} {packs_word} unseen "
+            "again.")
+        core.dlog("content",
+                  f"watched history reset ({n} packs unseen, "
+                  f"{rows} serve rows cleared)")
 
     def draw_bulb(area, cr):
         # A lightbulb stroked in the text colour — monochrome
@@ -3686,22 +4239,27 @@ def run_gui(project_arg: str | None) -> int:
         return False
 
     def choose_content_type():
-        # TODO: choose from deck statistics instead of dice —
-        # underrepresented types first, weighted by the project
-        # domain and what the user actually answers/saves.
+        # The active chip is a preference for generation too; with
+        # All, random (TODO: weight by the project domain and what
+        # the user actually answers/saves).
+        active = S.get("content_filter", "all")
+        if active != "all":
+            return active
         import random
         return random.choice(["game", "fact", "news", "idea"])
 
     def idea_pick_type():
-        if S.get("_creator_proc") is not None:
-            S["game_fb"].set_text(
+        if _creator_busy():
+            _set_content_note(
                 "The researcher agent is already creating…")
             return
         picked = choose_content_type()
+        why = "filter" if S.get("content_filter") != "all" else "random"
         core.dlog("content",
-                  f"generation type picked: {picked} (random)")
-        if not spawn_creator(picked, core._work_root(), "bulb"):
-            S["game_fb"].set_text(
+                  f"generation type picked: {picked} ({why})")
+        if not spawn_creator(picked, core._work_root(), "bulb") \
+                and not (S.get("game_fb").get_text() or "").strip():
+            _set_content_note(
                 "Creator agent unavailable — see the decision "
                 "log ([content] creator …).")
 
@@ -3714,14 +4272,14 @@ def run_gui(project_arg: str | None) -> int:
             Gtk.show_uri_on_window(S["win"], url, Gdk.CURRENT_TIME)
             core.dlog("content", f"news link opened: {game.get('id')}")
         except Exception as exc:
-            S["game_fb"].set_text(f"Could not open the link: {exc}")
+            _set_content_note(f"Could not open the link: {exc}")
 
     def game_save_idea():
         game = S["game_ctl"].get("game") or {}
         from backend.app import content_researcher as _cr
         path = _cr.save_idea(project_path, game)
         S["btn_save"].set_sensitive(False)
-        S["game_fb"].set_text(
+        _set_content_note(
             "Saved. A coding agent can pick this up from "
             ".aat/research/saved_ideas.jsonl")
         core.dlog("content", f"idea saved: {game.get('id')} -> {path}")
@@ -3754,6 +4312,15 @@ def run_gui(project_arg: str | None) -> int:
         S["game_fb"].set_text((head + expl + tail).strip())
         for cid, b in ctl["btns"].items():
             b.set_sensitive(False)
+            # A sensitive=false GTK label takes the theme's disabled
+            # colour, which is invisible on the light "correct"
+            # pill. Pin the disabled state colour explicitly.
+            lbl = b.get_child()
+            if lbl is not None:
+                col = PALC["bg"] if cid == game.get("answer") \
+                    else PALC["muted"]
+                lbl.override_color(Gtk.StateFlags.INSENSITIVE,
+                                   Gdk.RGBA(*col, 1))
             if cid == game.get("answer"):
                 b.get_style_context().add_class("choice-right")
             elif cid == target:
@@ -3766,6 +4333,9 @@ def run_gui(project_arg: str | None) -> int:
             adj.set_value(max(adj.get_upper() - adj.get_page_size(), 0))
             return False
         GLib.idle_add(_to_bottom)
+        # Wrapped explanation text settles its height a frame later;
+        # scroll again then, or the last line hides under the edge.
+        GLib.timeout_add(90, _to_bottom)
         core.dlog("content", f"answer {target} in {game.get('id')}: "
                              f"correct={out['correct']}")
 
@@ -3864,6 +4434,10 @@ def run_gui(project_arg: str | None) -> int:
 
     def _maybe_serve():
         ctl = S["game_ctl"]
+        if ctl["game"] is None and not engine.packs_for():
+            # An empty filter is an explicit create request; the
+            # chip handler owns that path, not the visibility tick.
+            return
         if ctl["game"] is None or ctl["answered"]:
             serve_game(True)
 
@@ -4067,6 +4641,21 @@ def run_gui(project_arg: str | None) -> int:
                 win.fullscreen()
                 S["_fullscreen"] = True
             return True
+        if S["overlay_on"] and not S["panel_on"] \
+                and S["view_mode"] == "feed_vis" \
+                and _content_visible():
+            # Vertical paging, Shorts-style. Only while the terminal
+            # is not on screen, so typing in it is never hijacked.
+            plain = not (event.state & (
+                Gdk.ModifierType.CONTROL_MASK
+                | Gdk.ModifierType.SHIFT_MASK
+                | Gdk.ModifierType.MOD1_MASK))
+            if plain and kv in (Gdk.KEY_Down, Gdk.KEY_Page_Down):
+                _page_step(1)
+                return True
+            if plain and kv in (Gdk.KEY_Up, Gdk.KEY_Page_Up):
+                _page_step(-1)
+                return True
         if kv == Gdk.KEY_Escape:
             if S.get("_fullscreen"):
                 win.unfullscreen()
@@ -4264,6 +4853,7 @@ def run_gui(project_arg: str | None) -> int:
             f"Decision log (latest):\n"
             f"{chr(10).join(list(core.decisions)[-8:]) or '—'}\n\n"
             f"Process tree:\n{tree or '—'}")
+        _refresh_settings_history()
 
     def _follow_project():
         """Content follows the terminal: when the shell's
@@ -4290,11 +4880,11 @@ def run_gui(project_arg: str | None) -> int:
     def tick():
         agent, _comp = display_state()
         _follow_project()
-        if S.get("_creator_proc") is not None \
+        if _creator_busy() \
                 and not S["game_ctl"].get("answered"):
             frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
             frame = frames[int(time.time() * 8) % len(frames)]
-            S["game_fb"].set_text(
+            _set_content_note(
                 f"{frame} Creating a {S.get('_creator_type')} "
                 "for this project — the researcher agent is "
                 "working…")

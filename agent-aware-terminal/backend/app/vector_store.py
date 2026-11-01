@@ -122,6 +122,31 @@ class VectorStore:
                 (item_id, project, time.time(), dwell_s))
             self._conn.commit()
 
+    def serve_count(self, project=None):
+        with self._lock:
+            if project:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) FROM serves WHERE project=?",
+                    (project,)).fetchone()
+            else:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) FROM serves").fetchone()
+        return row[0] if row else 0
+
+    def reset_serves(self, project=None):
+        """Forget what was watched (all projects by default).
+
+        Reactions are preferences, not viewing history, so they
+        stay. Returns the number of deleted serve rows."""
+        with self._lock:
+            if project:
+                cur = self._conn.execute(
+                    "DELETE FROM serves WHERE project=?", (project,))
+            else:
+                cur = self._conn.execute("DELETE FROM serves")
+            self._conn.commit()
+        return cur.rowcount
+
     def fast_skip_count(self, project, days=7):
         with self._lock:
             row = self._conn.execute(

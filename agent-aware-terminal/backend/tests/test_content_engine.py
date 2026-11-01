@@ -408,3 +408,95 @@ class TypeFilterTests(unittest.TestCase):
             self.assertEqual([p["id"] for p in engine.packs], ["f1"])
             self.assertEqual(engine.next_game()["id"], "f1")
             self.assertEqual(engine.progress(), (1, 1))
+
+
+class RuntimeTypeFilterTests(unittest.TestCase):
+    """The pane's All / News / Facts / Quiz / Ideas chips."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        tmp = pathlib.Path(self._tmp.name)
+        tmp.joinpath("g1.json").write_text(json.dumps({
+            "id": "g1", "type": "game", "title": "G1",
+            "choices": [{"id": "a", "label": "A"}],
+            "answer": "a", "explanation": "e"}))
+        tmp.joinpath("g2.json").write_text(json.dumps({
+            "id": "g2", "type": "game", "title": "G2",
+            "choices": [{"id": "a", "label": "A"}],
+            "answer": "a", "explanation": "e"}))
+        tmp.joinpath("f1.json").write_text(json.dumps({
+            "id": "f1", "type": "fact", "title": "F1",
+            "body": "Because."}))
+        tmp.joinpath("f2.json").write_text(json.dumps({
+            "id": "f2", "type": "fact", "title": "F2",
+            "body": "Because."}))
+        tmp.joinpath("n1.json").write_text(json.dumps({
+            "id": "n1", "type": "news", "title": "N1",
+            "body": "News.", "link": "https://example.com/n"}))
+        tmp.joinpath("i1.json").write_text(json.dumps({
+            "id": "i1", "type": "idea", "title": "I1",
+            "body": "Idea."}))
+        self.engine = ce.ContentEngine([tmp], seed=4)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_filter_serves_only_the_chosen_type(self):
+        self.engine.set_type_filter({"fact"})
+        seen = {self.engine.next_game()["id"]
+                for _ in range(2)}
+        self.assertEqual(seen, {"f1", "f2"})
+        self.assertEqual(self.engine.progress(), (2, 2))
+        self.engine.set_type_filter({"news"})
+        self.assertEqual(self.engine.next_game()["id"], "n1")
+        self.assertEqual(self.engine.progress(), (1, 1))
+
+    def test_filter_follows_the_shuffled_deck(self):
+        # Serving is randomized, not catalogue order: the first
+        # filtered card is the first matching card in the deck.
+        self.engine.set_type_filter({"fact"})
+        expected = [p["id"] for p in self.engine.deck
+                    if ce.resolve_type(p) == "fact"]
+        self.assertEqual(self.engine.next_game()["id"], expected[0])
+
+    def test_empty_filter_has_nothing_to_serve(self):
+        self.engine.set_type_filter({"idea"})
+        self.assertEqual(self.engine.next_game()["id"], "i1")
+        # The catalogue contains no second idea: the deck wraps,
+        # still within the chosen type.
+        self.assertEqual(self.engine.next_game()["id"], "i1")
+        self.engine.set_type_filter(set())
+        ids = {self.engine.next_game()["id"] for _ in range(3)}
+        self.assertTrue(ids & {"g1", "g2", "f1", "f2"})
+
+    def test_full_cycle_of_a_filter_keeps_other_progress(self):
+        self.engine.set_type_filter({"game"})
+        served = {self.engine.next_game()["id"] for _ in range(2)}
+        self.assertEqual(served, {"g1", "g2"})
+        self.engine.set_type_filter({"fact"})
+        self.engine.next_game()
+        self.engine.next_game()
+        # Both facts are now seen; the games must still be seen too.
+        self.engine.set_type_filter({"game"})
+        self.assertEqual(self.engine.progress(), (2, 2))
+
+    def test_reset_history_clears_the_deck_and_persists(self):
+        state = pathlib.Path(self._tmp.name) / "state.json"
+        self.engine.state_path = state
+        self.engine.next_game()
+        self.engine.next_game()
+        self.assertTrue(state.exists())
+        self.assertEqual(self.engine.reset_history(), 2)
+        self.assertEqual(self.engine.progress(), (0, 6))
+        self.assertEqual(json.loads(state.read_text())["served"], [])
+        # The catalogue is untouched and the next serve starts over.
+        self.assertEqual(len(self.engine.packs), 6)
+        self.assertIsNotNone(self.engine.next_game())
+
+    def test_type_counts_and_all_filter(self):
+        self.assertEqual(self.engine.type_counts(),
+                         {"game": 2, "fact": 2, "news": 1,
+                          "idea": 1})
+        self.engine.set_type_filter({"game", "fact", "news", "idea"})
+        self.assertIsNone(self.engine.filter_types)  # all four = All
+        self.assertTrue(self.engine.matches(self.engine.packs[0]))

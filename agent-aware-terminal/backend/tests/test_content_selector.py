@@ -97,6 +97,19 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(picked[0], "g-math")
         self.assertEqual(picked[1], "global")
 
+    def test_type_filter_restricts_the_pick(self):
+        # The pane filters to one type; the selector must respect
+        # it even when a stronger match exists in another type.
+        picked = self.sel.pick("audio codec work", str(self.proj),
+                               set(), types={"game"})
+        self.assertEqual(picked[0], "g-misc")
+        picked = self.sel.pick("audio codec work", str(self.proj),
+                               set(), types={"fact"})
+        self.assertEqual(picked[0], "p-audio")
+        self.assertIsNone(self.sel.pick(
+            "audio codec work", str(self.proj), set(),
+            types={"news"}))
+
     def test_dislike_penalizes_a_tie(self):
         self.store.add_reaction("g-math", str(self.proj), "dislike")
         picked = self.sel.pick("audio math", str(self.proj),
@@ -157,6 +170,13 @@ class HashingEmbedderTests(unittest.TestCase):
             self.assertEqual(store.get_vector("x1"), [0.5, 0.5])
             self.assertEqual(store.all_vectors("m")[0][0], "x1")
             store.add_reaction("x1", "p", "like")
+            self.assertEqual(store.reaction_ids("p", "like"),
+                             ["x1"])
+            store.record_serve("x1", "p")
+            self.assertEqual(store.serve_count(), 1)
+            self.assertEqual(store.reset_serves(), 1)
+            self.assertEqual(store.serve_count("p"), 0)
+            # A reset forgets viewing history, not preferences.
             self.assertEqual(store.reaction_ids("p", "like"),
                              ["x1"])
 

@@ -13,7 +13,18 @@ import os
 import threading
 import time
 
-AGENT_BINARIES = ("muse", "codex", "claude")
+AGENT_BINARIES = ("muse", "codex", "claude", "kilo")
+
+
+def agent_binaries() -> tuple:
+    """Built-in agent CLIs plus any the user adds with
+    AAT_AGENT_PROCS (comma-separated process names). Any such
+    agent is understood through the generic paths: process
+    activity plus the System-1 screen reading."""
+    extra = os.environ.get("AAT_AGENT_PROCS", "")
+    names = [n.strip().lower() for n in extra.split(",") if n.strip()]
+    return AGENT_BINARIES + tuple(
+        n for n in names if n not in AGENT_BINARIES)
 
 
 def _agent_pid(tree, name):
@@ -83,7 +94,7 @@ class SessionObserver(threading.Thread):
     def _detect_agent(self, tree: list[dict]) -> str | None:
         for proc in tree:
             cmd = (proc["cmdline"] or proc["comm"] or "").lower()
-            for name in AGENT_BINARIES:
+            for name in agent_binaries():
                 if f"/{name}" in cmd or cmd.startswith(name + " ") \
                         or proc["comm"] == name:
                     return name

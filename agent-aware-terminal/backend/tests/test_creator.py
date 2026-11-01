@@ -133,3 +133,44 @@ class ProviderCommandTests(unittest.TestCase):
     def test_unknown_provider_is_an_error(self):
         with self.assertRaises(ValueError):
             self.cmd({"AAT_CREATOR_PROVIDER": "nope"})
+
+
+class KiloProviderTests(unittest.TestCase):
+    def test_kilo_preset(self):
+        self.assertEqual(
+            _native().creator_command(
+                {"AAT_CREATOR_PROVIDER": "kilo"}),
+            ["kilo", "run"])
+
+    def test_kilo_model(self):
+        self.assertEqual(
+            _native().creator_command(
+                {"AAT_CREATOR_PROVIDER": "kilo",
+                 "AAT_CREATOR_MODEL": "anthropic/claude-x"}),
+            ["kilo", "run", "-m", "anthropic/claude-x"])
+
+    def test_llm_is_not_an_argv_provider(self):
+        with self.assertRaises(ValueError):
+            _native().creator_command(
+                {"AAT_CREATOR_PROVIDER": "llm"})
+
+
+class AgentBinaryTests(unittest.TestCase):
+    def test_kilo_is_built_in(self):
+        from backend.app import session_observer as so
+        self.assertIn("kilo", so.agent_binaries())
+
+    def test_env_extras_merge(self):
+        import os
+        from backend.app import session_observer as so
+        old = os.environ.get("AAT_AGENT_PROCS")
+        os.environ["AAT_AGENT_PROCS"] = "aider, goose"
+        try:
+            names = so.agent_binaries()
+        finally:
+            if old is None:
+                os.environ.pop("AAT_AGENT_PROCS", None)
+            else:
+                os.environ["AAT_AGENT_PROCS"] = old
+        self.assertIn("aider", names)
+        self.assertIn("goose", names)

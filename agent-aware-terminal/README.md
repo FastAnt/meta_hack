@@ -328,7 +328,19 @@ files a generation request for the researcher agent
 
 When the agent has been busy for more than 10 seconds, the left
 pane switches from the terminal to companion content; clicking
-the square brings the terminal back. Content is served by
+the square brings the terminal back. The Feed is a vertical
+deck, Shorts-style: the **All / News / Facts / Quiz / Ideas**
+chips filter it (All by default — one type at a time), **Next ↓**,
+the mouse wheel, a two-finger swipe or ↑/↓ moves through cards,
+and **↑ Prev** walks back over the ones already shown this
+session. A filter with no matching pack is not a dead end: the
+pane asks the researcher agent to create the first one (the same
+creator the bulb button launches), and the card appears when the
+deposit lands. Settings → **Watched content** resets the deck and
+its serve log, so every pack becomes unseen again; ♥/✕ reactions
+are kept.
+
+Content is served by
 `backend/app/content_engine.py` from JSON packs that are never
 baked into the binary — drop a pack into
 `~/.local/share/agent-aware-terminal/content/` (or `./content/`,

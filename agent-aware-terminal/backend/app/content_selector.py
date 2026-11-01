@@ -99,7 +99,7 @@ class ContentSelector:
                                  f"({self.embedder.model_id})")
 
     # -- ranking ---------------------------------------------------
-    def _rank(self, context_text, project_key, exclude):
+    def _rank(self, context_text, project_key, exclude, types=None):
         vectors = dict(self.store.all_vectors(
             self.embedder.model_id))
         if not vectors:
@@ -114,9 +114,12 @@ class ContentSelector:
              self.store.reaction_ids(project_key, "dislike")
              if i in vectors])
         packs = {p["id"]: p for p in self.engine.packs}
+        wanted = set(types) if types else None
         ranked = []
         for pid, vec in vectors.items():
             if pid in exclude or pid not in packs:
+                continue
+            if wanted and ce.resolve_type(packs[pid]) not in wanted:
                 continue
             score = cosine(query, vec)
             if liked:
@@ -127,12 +130,16 @@ class ContentSelector:
         ranked.sort(reverse=True)
         return ranked
 
-    def pick(self, context_text, project_key, exclude):
-        """Returns (pack_id, source, best_sim) or None."""
+    def pick(self, context_text, project_key, exclude, types=None):
+        """Returns (pack_id, source, best_sim) or None.
+
+        `types` restricts the pick to the pane's active content
+        filters; the catalogue and the index stay global."""
         if not context_text.strip():
             return None
         try:
-            ranked = self._rank(context_text, project_key, exclude)
+            ranked = self._rank(context_text, project_key, exclude,
+                                types)
         except Exception as exc:
             self.dlog("content", f"selector failed: {exc}"[:120])
             return None
