@@ -2621,6 +2621,28 @@ def run_gui(project_arg: str | None) -> int:
         vte.grab_focus()
         serve_game(False)
 
+        # Game tour (review aid): AAT_TOUR=<seconds> opens the
+        # visualization with the content pane up and auto-serves
+        # the next game on an interval — the whole deck, one by
+        # one, at real size with live animation. Pauses while
+        # the user looks at the terminal.
+        _tour_raw = os.environ.get("AAT_TOUR", "")
+        if _tour_raw:
+            try:
+                _tour_secs = max(2, int(_tour_raw))
+            except ValueError:
+                _tour_secs = 6
+            set_overlay(True)
+            S["left_override"] = "content"
+
+            def _tour_tick():
+                if S["left_stack"].get_visible_child_name() \
+                        == "content":
+                    serve_game(True)
+                return True
+            GLib.timeout_add_seconds(_tour_secs, _tour_tick)
+            core.dlog("ui", f"game tour on ({_tour_secs}s per game)")
+
         def _anim_tick():
             game = S["game_ctl"].get("game")
             if S["overlay_on"] and game \
