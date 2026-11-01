@@ -185,6 +185,39 @@ class LiquidClient:
                 "confidence": float(ans.get("confidence") or 0.0),
                 "mode": SCREEN_MODES[choice]}
 
+    def pick_best(self, context: str, candidates: list) -> tuple | None:
+        """System-1 chooses the single best content item to show
+        from a retrieved shortlist. Candidates are pack dicts.
+        Returns (pack_id, confidence) or None."""
+        if not candidates:
+            return None
+        criteria = {
+            c["id"]: (f'{c.get("type", "game")}: '
+                      f'{c.get("title", "")} '
+                      f'({c.get("topic", "")})')
+            for c in candidates[:10]}
+        answers = self.decide(
+            "A developer is waiting while a coding agent works. "
+            f"Current project and task context: {context}", {
+                "pick": {
+                    "type": "choice",
+                    "instructions": (
+                        "Choose the ONE item that best fits this "
+                        "developer's current project and task and "
+                        "would be most interesting to read or play "
+                        "right now. Prefer the item most specific "
+                        "to the context over generic ones."),
+                    "criteria": criteria,
+                },
+            })
+        if not answers:
+            return None
+        ans = answers.get("pick") or {}
+        choice = ans.get("choice")
+        if choice not in criteria:
+            return None
+        return choice, float(ans.get("confidence") or 0)
+
     def classify_activity(self, state: str) -> dict | None:
         """System-1 classification of what the agent is doing right now.
 

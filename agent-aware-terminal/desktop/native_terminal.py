@@ -1215,6 +1215,7 @@ button.choice {{ background: transparent; color: {p['body']}; border: 1px solid 
 button.choice:hover {{ border-color: {p['text']}; color: {p['text']}; }}
 button.choice-right {{ background: {p['text']}; color: {p['bg']}; border-color: {p['text']}; }}
 .fb-ok {{ font-size: 15px; font-weight: 600; color: {p['text']}; }}
+button.react-on {{ background: {p['text']}; color: {p['bg']}; border-color: {p['text']}; }}
 .fb-no {{ font-size: 15px; font-weight: 600; color: {p['muted']}; }}
 button.choice-wrong {{ color: {p['muted']}; border-color: {p['muted']}; }}
 button.game-next {{ background: transparent; color: {p['text']}; border: 1px solid {p['text']}; border-radius: 9999px; padding: 7px 16px; font-family: {GROTESK}; font-size: 13px; box-shadow: none; }}
@@ -1545,6 +1546,16 @@ def run_gui(project_arg: str | None) -> int:
                  else "")
               + (f"; pack errors: {'; '.join(engine.errors[:2])}"
                  if engine.errors else ""))
+    from backend.app import embeddings as _emb
+    from backend.app import vector_store as _vs
+    from backend.app import content_selector as _cs
+    vstore = _vs.VectorStore(DATA_DIR / "content_index.db")
+    embedder = _emb.make_embedder(DATA_DIR)
+    selector = _cs.ContentSelector(
+        engine, vstore, embedder, core.liquid, core.dlog,
+        project_path=project_path,
+        project_content_dir=Path(project_path) / ".aat" / "content")
+    threading.Thread(target=selector.index, daemon=True).start()
 
     app = Gtk.Application(
         application_id=os.environ.get("AAT_APP_ID",
@@ -2442,9 +2453,21 @@ def run_gui(project_arg: str | None) -> int:
         S["btn_save"] = Gtk.Button(label="Save idea")
         S["btn_save"].get_style_context().add_class("game-next")
         S["btn_save"].connect("clicked", lambda *_: game_save_idea())
+        S["btn_like"] = Gtk.Button(label="\u2665")
+        S["btn_like"].set_tooltip_text("More like this")
+        S["btn_like"].get_style_context().add_class("game-next")
+        S["btn_like"].connect(
+            "clicked", lambda *_: game_react("like"))
+        S["btn_dislike"] = Gtk.Button(label="\u2715")
+        S["btn_dislike"].set_tooltip_text("Less like this")
+        S["btn_dislike"].get_style_context().add_class("game-next")
+        S["btn_dislike"].connect(
+            "clicked", lambda *_: game_react("dislike"))
         fb_row.pack_end(S["game_next"], False, False, 0)
         fb_row.pack_end(S["btn_open"], False, False, 0)
         fb_row.pack_end(S["btn_save"], False, False, 0)
+        fb_row.pack_end(S["btn_like"], False, False, 0)
+        fb_row.pack_end(S["btn_dislike"], False, False, 0)
         game_box.pack_start(fb_row, False, False, 8)
         S["btn_idea"] = Gtk.Button()
         S["btn_idea"].set_tooltip_text(
@@ -2779,11 +2802,85 @@ def run_gui(project_arg: str | None) -> int:
         return False
 
     # ---------------- companion content (games) ----------------
+    def _content_context():
+        task = (core.agent_state or {}).get("task") or ""
+        key = (project_path, task)
+        if S.get("_ctx_key") != key:
+            domains = ""
+            try:
+                from backend.app import content_researcher as _cr2
+                prof = _cr2.profile_project(project_path, task)
+                domains = ", ".join(
+                    f"{d['label']} ({', '.join(d['evidence'][:4])})"
+                    for d in prof.get("domains", [])[:2])
+            except Exception:
+                pass
+            name = (core.project or {}).get("name") or \
+                Path(project_path).name
+            S["_ctx_text"] = (f"Project: {name}. Domain: "
+                              f"{domains or 'general software'}. "
+                              f"Current task: {task or 'coding'}")
+            S["_ctx_key"] = key
+        return S["_ctx_text"]
+
+    def _close_previous_serve():
+        ctl = S["game_ctl"]
+        prev = ctl.get("serving_id")
+        if prev and not _tour_raw:
+            dwell = time.time() - ctl.get("serving_at", time.time())
+            vstore.record_serve(prev, project_path, dwell_s=dwell)
+        ctl["serving_id"] = None
+
+    def game_react(kind):
+        game = S["game_ctl"].get("game")
+        if not game:
+            return
+        if not _tour_raw:
+            vstore.add_reaction(game["id"], project_path, kind)
+        for name, btn in (("like", S["btn_like"]),
+                          ("dislike", S["btn_dislike"])):
+            ctx = btn.get_style_context()
+            if name == kind:
+                ctx.add_class("react-on")
+            else:
+                ctx.remove_class("react-on")
+        core.dlog("content", f"reaction {kind} on {game['id']}")
+
     def serve_game(advance=True):
         ctl = S["game_ctl"]
-        game = engine.next_game() if advance else engine.current()
+        game = None
+        if advance:
+            _close_previous_serve()
+            if selector.indexed:
+                ctx = _content_context()
+                picked = selector.pick(ctx, project_path,
+                                       set(engine._served))
+                if picked:
+                    pid, source, sim = picked
+                    pack = engine.pack_by_id(pid)
+                    if pack is not None:
+                        game = engine.serve_specific(pack)
+                        core.dlog("content",
+                                  f"selector -> {pid} [{source}, "
+                                  f"sim {sim:.2f}]")
+                        if source == "global":
+                            _psim = sim
+                            threading.Thread(
+                                target=selector.evaluate_generation,
+                                args=(ctx, project_path, 0.0, _psim),
+                                daemon=True).start()
+            if game is None:
+                game = engine.next_game()
+            if game is not None and not _tour_raw:
+                ctl["serving_id"] = game["id"]
+                ctl["serving_at"] = time.time()
+                vstore.record_serve(game["id"], project_path)
+        else:
+            game = engine.current()
         ctl.update(game=game, answered=False, chosen=None, btns={},
                    t0=time.time(), verdict=None, verdict_t0=0.0)
+        for btn in (S["btn_like"], S["btn_dislike"]):
+            btn.get_style_context().remove_class("react-on")
         if game is None:
             S["game_scroll"].hide()
             S["game_empty"].show_all()

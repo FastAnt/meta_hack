@@ -554,6 +554,20 @@ class ContentEngine:
         self._save_state()
         return game
 
+    def serve_specific(self, pack: dict) -> dict:
+        """Serve one chosen pack (selector path) with the same
+        no-repeat bookkeeping as deck serving."""
+        self.maybe_reload()
+        self._served.append(pack["id"])
+        self._last = pack["id"]
+        self._current = pack
+        self._save_state()
+        return pack
+
+    def pack_by_id(self, pack_id: str) -> dict | None:
+        return next((p for p in self.packs
+                     if p["id"] == pack_id), None)
+
     def current(self) -> dict | None:
         return self._current
 

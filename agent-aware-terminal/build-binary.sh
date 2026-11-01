@@ -11,6 +11,9 @@ if [ ! -d .venv-build ]; then
   python3 -m venv --system-site-packages .venv-build
   .venv-build/bin/pip install -q pyinstaller requests
 fi
+# Local embedding runtime (optional at runtime: hashing fallback
+# covers its absence, but the binary should carry it).
+.venv-build/bin/pip install -q onnxruntime numpy 2>/dev/null || true
 .venv-build/bin/pyinstaller --noconfirm --onedir \
   --name agent-aware-terminal --paths . \
   --add-data "demo_project:demo_project" \
@@ -27,6 +30,10 @@ fi
   --hidden-import backend.app.meta_client \
   --hidden-import backend.app.liquid_client \
   --hidden-import backend.app.content_engine \
+  --hidden-import backend.app.embeddings \
+  --hidden-import backend.app.vector_store \
+  --hidden-import backend.app.content_selector \
+  --collect-all onnxruntime \
   --collect-all gi desktop/native_terminal.py
 rm -rf dist/agent-aware-terminal/content dist/agent-aware-terminal/games-base
 cp -r games-base dist/agent-aware-terminal/games-base

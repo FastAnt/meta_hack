@@ -49,6 +49,20 @@ companion content while the coding agent works.
    lifecycle `deposited`. Report to the operator: file, domain,
    one-line idea, test result.
 
+## Generation requests (your work queue)
+
+The terminal app files requests into
+`<project>/.aat/research/generation_requests.jsonl` when its
+selector finds a content gap (project content missing or not
+matching the current task, global catalogue too generic,
+System-1 agreed). Each line: `want_type` (game|fact|news|idea),
+`context`, `reason`, `liked_examples`, `avoid_similar_to`.
+Check this file first: satisfy open requests before inventing
+your own topics, honour `avoid_similar_to` (the user disliked
+things like those), then mark the request handled by noting it
+in the lifecycle log. The user can also force a type with the
+bulb button in the app (announced, not filed).
+
 ## Hard rules
 
 - Facts must be verifiably true; if unsure, verify or drop it.
