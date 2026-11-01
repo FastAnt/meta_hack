@@ -93,7 +93,12 @@ def snapshot_files(root: str) -> dict:
     """{relative path: (size, mtime)} for everything under root."""
     out = {}
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        dirnames[:] = [d for d in dirnames
+                       if d not in _SKIP_DIRS
+                       and not d.startswith(".venv")]
+        if len(out) > 80000:
+            dirnames[:] = []
+            continue
         for fn in filenames:
             path = os.path.join(dirpath, fn)
             try:
@@ -336,11 +341,29 @@ class Core:
             elif ev.get("state") in ("completed", "failed", "awaiting_user"):
                 self.working_since = self.working_since  # keep for stats
 
+    def _work_root(self) -> str:
+        """Where the terminal actually works: the live cwd of
+        the shell (agents wander — ~/dev/yue2 while the app was
+        launched in the demo project), ascended to its git root.
+        File truth must be measured there, not at the launch
+        project."""
+        cwd = (getattr(self, "snapshot", None) or {}).get("cwd") \
+            or self.project_path
+        probe = Path(cwd)
+        for _ in range(5):
+            if (probe / ".git").exists():
+                return str(probe)
+            if probe.parent == probe:
+                break
+            probe = probe.parent
+        return cwd
+
     def _start_baseline(self):
         if self._baseline is not None:
             return
         self._baseline = {}
-        root = self.project_path
+        root = self._work_root()
+        self._turn_root = root
 
         def _snap():
             try:
@@ -357,11 +380,14 @@ class Core:
                 and self.results and self.results.get("observed"):
             return  # this turn was already finalized
         self._finalized_at = time.time()
+        root = getattr(self, "_turn_root", None) \
+            or self.project_path
+        self._turn_root = None
         if self._baseline is not None:
-            files = session_diff(self.project_path, self._baseline)
+            files = session_diff(root, self._baseline)
             self._baseline = None
         else:
-            files = git_changes_scoped(self.project_path) or []
+            files = git_changes_scoped(root) or []
         self.results = {"files": files, "completion": None,
                         "safety": None, "source": "pending",
                         "final_state": final, "observed": True}
@@ -499,6 +525,9 @@ class Core:
         return g
 
     # -- System-1 activity classification (ambiguous moments) -------------
+    SCREEN_MODE_FOR_RULE = {"writing_code": "build",
+                            "running_tests": "test",
+                            "downloading": "download"}
     SCREEN_WORK = {"thinking", "searching_system", "searching_web",
                    "writing_code", "installing", "downloading",
                    "compiling", "running_tests", "waiting_for_user",
@@ -628,6 +657,21 @@ class Core:
             self._screen_tail = screen[-1500:]
         if screen and agent.get("agent") \
                 and agent.get("source") != "agent_event":
+            rule = _screen_rule_choice(screen)
+            if rule:
+                now = time.time()
+                if now - getattr(self, "_screen_at", 0) >= 4:
+                    self._screen_at = now
+                    self._screen_turn_tick(
+                        agent.get("agent"), rule, 0.9)
+                    self.mode_override = {
+                        "mode": self.SCREEN_MODE_FOR_RULE[rule],
+                        "at": now, "choice": rule,
+                        "confidence": 0.9, "screen": True}
+                    self.dlog("system1",
+                              f"screen rule -> {rule} "
+                              "(deterministic)")
+                return
             if not self.liquid.configured:
                 if not getattr(self, "_nokey_logged", False):
                     self._nokey_logged = True
@@ -1422,6 +1466,27 @@ def _read_vte_text(term) -> str:
 
 
 _s = lambda s, n=60: " ".join(str(s).split())[:n]
+
+
+_SCREEN_RULES = (
+    ("writing_code", re.compile(r"Edited \d+ files?|Edited \S+\.(py|js|ts|md|cpp|c|h|rs|go|json)")),
+    ("running_tests", re.compile(r"\b\d+ passed\b|Ran \d+ tests|OK \(\d+ tests\)|FAILED \(failures")),
+    ("downloading", re.compile(r"Cloning into|Receiving objects:|Downloading \d|Fetching \d")),
+)
+
+
+def _screen_rule_choice(screen: str):
+    """Deterministic readings of the agent's own transcript.
+    When the terminal literally prints 'Edited 2 files', no
+    model vote is needed (112:1 'thinking' vs 'writing_code'
+    on such screens says why): the last lines are facts.
+    Returns a SCREEN_MODES choice or None."""
+    lines = [ln for ln in (screen or "").splitlines() if ln.strip()]
+    tail = "\n".join(lines[-14:])
+    for choice, rx in _SCREEN_RULES:
+        if rx.search(tail):
+            return choice
+    return None
 
 
 def mode_for_agent(agent: dict) -> str:

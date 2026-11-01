@@ -78,3 +78,31 @@ class ScreenTurnTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScreenRuleTests(unittest.TestCase):
+    def test_edited_line_means_writing_code(self):
+        native = _native()
+        screen = ("Ran python3 build.py\n"
+                  "Edited 2 files (+8 -0)\n"
+                  "docs/x.md (+4 -0)\nWorking (3m - esc)")
+        self.assertEqual(native._screen_rule_choice(screen),
+                         "writing_code")
+
+    def test_old_edited_line_out_of_window_is_ignored(self):
+        native = _native()
+        lines = ["Edited 9 files (+1 -1)"] + \
+            [f"output line {i}" for i in range(30)]
+        self.assertIsNone(
+            native._screen_rule_choice("\n".join(lines)))
+
+    def test_work_root_follows_terminal_cwd(self):
+        import pathlib as _pl
+        core = _native().Core(tempfile.mkdtemp())
+        with tempfile.TemporaryDirectory() as tmp:
+            sub = _pl.Path(tmp) / "proj" / "src"
+            sub.mkdir(parents=True)
+            (_pl.Path(tmp) / "proj" / ".git").mkdir()
+            core.snapshot = {"cwd": str(sub)}
+            self.assertEqual(core._work_root(),
+                             str(_pl.Path(tmp) / "proj"))
