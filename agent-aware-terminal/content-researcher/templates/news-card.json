@@ -1,0 +1,9 @@
+{
+  "type": "news",
+  "id": "domain-news-slug-001",
+  "kicker": "PROJECT NEWS",
+  "topic": "Replace with the detected domain label",
+  "title": "What happened, <= 60 chars",
+  "body": "Two or three sentences: the news and why it matters for this project. The reader can open the link for the full story.",
+  "link": "https://example.com/source-article"
+}

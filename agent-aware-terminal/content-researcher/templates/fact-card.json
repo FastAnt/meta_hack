@@ -1,6 +1,6 @@
 {
   "id": "domain-fact-slug-001",
-  "kind": "card",
+  "type": "fact",
   "kicker": "PROJECT FACT",
   "topic": "Replace with the detected domain label",
   "title": "One surprising true statement, <= 60 chars",

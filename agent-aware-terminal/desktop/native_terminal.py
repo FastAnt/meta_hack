@@ -2400,6 +2400,7 @@ def run_gui(project_arg: str | None) -> int:
         S["game_scene"].set_vexpand(True)
         S["game_scene"].connect("draw", draw_game_scene)
         scene_ev = Gtk.EventBox()
+        S["scene_ev"] = scene_ev
         scene_ev.add(S["game_scene"])
         scene_ev.connect("button-press-event", on_game_scene_click)
         game_box.pack_start(scene_ev, True, True, 4)
@@ -2426,7 +2427,15 @@ def run_gui(project_arg: str | None) -> int:
         S["game_next"] = Gtk.Button(label="Next")
         S["game_next"].get_style_context().add_class("game-next")
         S["game_next"].connect("clicked", lambda *_: serve_game(True))
+        S["btn_open"] = Gtk.Button(label="Open link \u2197")
+        S["btn_open"].get_style_context().add_class("game-next")
+        S["btn_open"].connect("clicked", lambda *_: game_open_link())
+        S["btn_save"] = Gtk.Button(label="Save idea")
+        S["btn_save"].get_style_context().add_class("game-next")
+        S["btn_save"].connect("clicked", lambda *_: game_save_idea())
         fb_row.pack_end(S["game_next"], False, False, 0)
+        fb_row.pack_end(S["btn_open"], False, False, 0)
+        fb_row.pack_end(S["btn_save"], False, False, 0)
         game_box.pack_start(fb_row, False, False, 8)
         S["btn_gen"] = Gtk.Button(label="+")
         S["btn_gen"].set_tooltip_text(
@@ -2754,9 +2763,12 @@ def run_gui(project_arg: str | None) -> int:
             return
         S["game_empty"].hide()
         S["game_box"].show_all()
+        ptype = game.get("type", "game")
+        _tag = {"game": "GAME", "news": "NEWS", "idea": "IDEA",
+                "fact": "FACT"}.get(ptype, "GAME")
         S["game_kicker"].set_text(
-            (game.get("kicker") or game.get("topic")
-             or "WHILE YOU WAIT").upper())
+            (_tag + " · " + (game.get("kicker") or game.get("topic")
+                             or "")).strip(" ·").upper())
         i, n = engine.progress()
         S["game_progress"].set_text(f"{i} / {n}" if n else "")
         S["game_title"].set_text(game.get("title", ""))
@@ -2765,7 +2777,8 @@ def run_gui(project_arg: str | None) -> int:
         S["game_q"].set_text(game.get("question", ""))
         for child in list(S["game_choices"].get_children()):
             S["game_choices"].remove(child)
-        for ch in game.get("choices") or []:
+        for ch in (game.get("choices") or []) \
+                if ptype == "game" else []:
             btn = Gtk.Button(label=ch.get("label", ""))
             btn.get_style_context().add_class("choice")
             lbl = btn.get_child()
@@ -2778,7 +2791,26 @@ def run_gui(project_arg: str | None) -> int:
             S["game_choices"].pack_start(btn, False, False, 0)
             btn.show()
         S["game_fb"].set_text("")
-        S["game_next"].hide()
+        S["btn_save"].set_sensitive(True)
+        # Type drives the actions: games answer for points and
+        # get Next after answering; facts/news skip freely;
+        # news opens its link; ideas can be saved for an agent.
+        S["game_next"].set_label(
+            "Next" if ptype == "game" else "Skip / Next \u2192")
+        if ptype == "game":
+            S["game_next"].hide()
+        else:
+            S["game_next"].show()
+        if ptype == "news" and game.get("link"):
+            S["btn_open"].show()
+        else:
+            S["btn_open"].hide()
+        if ptype == "idea":
+            S["btn_save"].show()
+        else:
+            S["btn_save"].hide()
+        S["scene_ev"].set_visible(bool(game.get("scene")
+                                       or game.get("_paint")))
         S["game_scene"].queue_draw()
         core.dlog("content", f"serving {game.get('id')}")
 
@@ -2787,6 +2819,27 @@ def run_gui(project_arg: str | None) -> int:
                "ideas": "Suggestions are coming soon."}.get(which, "")
         S["game_fb"].set_text(msg)
         core.dlog("content", f"placeholder action: {which}")
+
+    def game_open_link():
+        game = S["game_ctl"].get("game") or {}
+        url = game.get("link") or ""
+        if not url:
+            return
+        try:
+            Gtk.show_uri_on_window(S["win"], url, Gdk.CURRENT_TIME)
+            core.dlog("content", f"news link opened: {game.get('id')}")
+        except Exception as exc:
+            S["game_fb"].set_text(f"Could not open the link: {exc}")
+
+    def game_save_idea():
+        game = S["game_ctl"].get("game") or {}
+        from backend.app import content_researcher as _cr
+        path = _cr.save_idea(project_path, game)
+        S["btn_save"].set_sensitive(False)
+        S["game_fb"].set_text(
+            "Saved. A coding agent can pick this up from "
+            ".aat/research/saved_ideas.jsonl")
+        core.dlog("content", f"idea saved: {game.get('id')} -> {path}")
 
     def game_answer(target):
         ctl = S["game_ctl"]
@@ -2859,6 +2912,8 @@ def run_gui(project_arg: str | None) -> int:
         game = ctl.get("game")
         if not game or ctl["answered"]:
             return False
+        if (game.get("type", "game") != "game"):
+            return False  # only games take scene answers
         w = S["game_scene"].get_allocated_width()
         h = S["game_scene"].get_allocated_height()
         target = ce.pack_target_at(game, w, h, event.x, event.y)

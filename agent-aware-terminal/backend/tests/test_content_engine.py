@@ -287,3 +287,39 @@ def target_at(view, x, y):
             self.assertEqual(
                 ce.pack_target_at(packs[0], 800, 600, 700, 10),
                 "right")
+
+
+class ContentTypeTests(unittest.TestCase):
+    def test_legacy_kinds_resolve_to_types(self):
+        pack, err = ce.validate_pack({
+            "id": "x", "title": "t", "kind": "quiz",
+            "choices": [{"id": "a", "label": "A"}], "answer": "a"})
+        self.assertEqual(pack["type"], "game")
+        pack, err = ce.validate_pack({
+            "id": "x", "title": "t", "kind": "card", "body": "b"})
+        self.assertEqual(pack["type"], "fact")
+
+    def test_news_needs_link_fact_idea_need_body(self):
+        _, err = ce.validate_pack({"id": "n", "type": "news",
+                                   "title": "t", "body": "b"})
+        self.assertIsNotNone(err)
+        pack, err = ce.validate_pack({
+            "id": "n", "type": "news", "title": "t", "body": "b",
+            "link": "https://example.com/a"})
+        self.assertIsNotNone(pack, err)
+        _, err = ce.validate_pack({"id": "i", "type": "idea",
+                                   "title": "t"})
+        self.assertIsNotNone(err)
+        _, err = ce.validate_pack({"id": "z", "type": "bogus",
+                                   "title": "t"})
+        self.assertIsNotNone(err)
+
+    def test_non_game_types_do_not_score(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pathlib.Path(tmp, "f.json").write_text(json.dumps({
+                "id": "f1", "type": "fact", "title": "F",
+                "body": "Because."}))
+            engine = ce.ContentEngine([tmp], seed=1)
+            self.assertEqual(engine.next_game()["type"], "fact")
+            self.assertIsNone(engine.answer("x")["correct"])
+            self.assertEqual(engine.score["answered"], 0)

@@ -5,12 +5,17 @@ true, project-relevant fact. Use it when a fact teaches more
 than a quiz would, or as the deliverable for a weak-signal
 brief.
 
-Format (JSON, `kind: "card"`):
+Format (JSON, `"type": "fact"`). Two sibling types share
+this shape: `"type": "news"` (adds a required http(s) `link`;
+the pane shows Skip/Next + Open link) and `"type": "idea"`
+(adds `action_hint`; the pane shows a Save button that files
+the idea into `.aat/research/saved_ideas.jsonl` for a future
+agent). Templates: `content-researcher/templates/`.
 
 ```json
 {
   "id": "audio-fact-nyquist-001",
-  "kind": "card",
+  "type": "fact",
   "kicker": "PROJECT FACT",
   "topic": "Audio & DSP",
   "title": "Why 44.1 kHz?",

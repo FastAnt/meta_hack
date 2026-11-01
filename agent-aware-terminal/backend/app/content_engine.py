@@ -33,6 +33,17 @@ import random
 from pathlib import Path
 
 KINDS = ("quiz", "card")
+# Content types, marked inside every file (GAME["type"] or the
+# JSON "type" field). Legacy packs without a type resolve from
+# kind: quiz -> game, card -> fact.
+TYPES = ("game", "news", "idea", "fact")
+
+
+def resolve_type(raw) -> str:
+    t = raw.get("type")
+    if t:
+        return t
+    return "game" if raw.get("kind", "quiz") == "quiz" else "fact"
 SCENES = ("orbits", "diagram", "network")
 # Declarative scene animation: subtle motion beats a still
 # picture. Values are speeds (relative; keep them slow).
@@ -94,20 +105,29 @@ def validate_pack(raw, source: str = "") -> tuple[dict | None, str | None]:
         return None, "missing string id"
     if raw.get("kind", "quiz") not in KINDS:
         return None, f"{pid}: unknown kind {raw.get('kind')!r}"
+    ptype = resolve_type(raw)
+    if ptype not in TYPES:
+        return None, f"{pid}: unknown type {ptype!r}"
     if not raw.get("title"):
         return None, f"{pid}: missing title"
+    if ptype in ("fact", "news", "idea") and not raw.get("body"):
+        return None, f"{pid}: {ptype} needs a body"
+    if ptype == "news":
+        link = raw.get("link") or ""
+        if not (link.startswith("https://")
+                or link.startswith("http://")):
+            return None, f"{pid}: news needs an http(s) link"
     if "_paint" in raw:
         # Code game: meta rules only — it draws itself.
         choices = raw.get("choices") or []
         cids = [c.get("id") for c in choices]
         if len(cids) != len(set(cids)):
             return None, f"{pid}: duplicate choice ids"
-        if raw.get("kind", "quiz") == "quiz" \
-                and not isinstance(raw.get("answer"), str) \
-                or (raw.get("kind", "quiz") == "quiz"
-                    and not raw.get("answer")):
-            return None, f"{pid}: quiz needs an answer target id"
+        if ptype == "game" and not raw.get("answer"):
+            return None, f"{pid}: game needs an answer target id"
         pack = dict(raw)
+        pack["type"] = ptype
+        pack["kind"] = "quiz" if ptype == "game" else "card"
         pack["_source"] = source
         return pack, None
     scene = raw.get("scene")
@@ -136,13 +156,15 @@ def validate_pack(raw, source: str = "") -> tuple[dict | None, str | None]:
     cids = [c.get("id") for c in choices]
     if len(cids) != len(set(cids)):
         return None, f"{pid}: duplicate choice ids"
-    if raw.get("kind", "quiz") == "quiz":
+    if ptype == "game":
         valid = set(cids) | set(scene_targets(raw))
         if raw.get("answer") not in valid:
             return None, f"{pid}: answer {raw.get('answer')!r} not in targets"
         if not valid:
-            return None, f"{pid}: quiz has no way to answer"
+            return None, f"{pid}: game has no way to answer"
     pack = dict(raw)
+    pack["type"] = ptype
+    pack["kind"] = "quiz" if ptype == "game" else "card"
     pack["_source"] = source
     return pack, None
 
@@ -539,7 +561,7 @@ class ContentEngine:
         game = self._current
         if game is None:
             return {"correct": None, "explanation": ""}
-        if game.get("kind", "quiz") == "card":
+        if resolve_type(game) != "game":
             return {"correct": None,
                     "explanation": game.get("explanation", "")}
         correct = target_id == game.get("answer")

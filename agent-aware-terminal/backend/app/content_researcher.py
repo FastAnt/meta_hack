@@ -240,6 +240,21 @@ def write_brief(project, task_text: str = "") -> dict:
     return profile
 
 
+def save_idea(project, pack: dict) -> Path:
+    """Persist an idea card the user saved, for a future agent
+    to pick up. Appends to .aat/research/saved_ideas.jsonl."""
+    rdir = research_dir(project)
+    rdir.mkdir(parents=True, exist_ok=True)
+    path = rdir / "saved_ideas.jsonl"
+    record = {"id": pack.get("id"), "title": pack.get("title"),
+              "body": pack.get("body"),
+              "action_hint": pack.get("action_hint", ""),
+              "saved_at": int(time.time())}
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return path
+
+
 def summarize_outputs(project) -> dict:
     """What the content agent has deposited so far."""
     from backend.app.content_engine import scan_packs

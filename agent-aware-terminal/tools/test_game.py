@@ -105,10 +105,11 @@ def playthrough(pack):
             return ["engine would not serve the game"]
         targets = [c["id"] for c in game.get("choices") or []] + \
             scene_targets(game)
-        if game.get("kind", "quiz") == "card":
+        from backend.app.content_engine import resolve_type
+        if resolve_type(game) != "game":
             out = engine.answer(targets[0] if targets else "x")
             if out["correct"] is not None:
-                problems.append("card must not score")
+                problems.append("non-game content must not score")
             return problems
         if callable(game.get("_target_at")):
             # Probe the click surface: the answer must be
@@ -168,7 +169,7 @@ def worker(path, out_dir):
         print("RESULT " + json.dumps(result))
         return 1
     result["id"] = pack.get("id")
-    result["kind"] = pack.get("kind", "quiz")
+    result["kind"] = pack.get("type", "game")
     result["code"] = callable(pack.get("_paint"))
     result["problems"] += scene_problems(pack)
     result["problems"] += playthrough(pack)
