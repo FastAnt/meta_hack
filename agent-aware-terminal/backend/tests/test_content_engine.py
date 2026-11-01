@@ -289,6 +289,35 @@ def target_at(view, x, y):
                 "right")
 
 
+class ShippedTypeDeclarationTests(unittest.TestCase):
+    """Convention guard: every shipped game declares its
+    content type explicitly in the source file."""
+
+    def test_all_shipped_sources_declare_type(self):
+        import ast as _ast
+        missing = []
+        for f in sorted(GAMES_DIR.glob("*.py")):
+            if f.name.startswith("test"):
+                continue
+            tree = _ast.parse(f.read_text())
+            declared = False
+            for node in _ast.walk(tree):
+                if isinstance(node, _ast.Assign) and any(
+                        isinstance(tg, _ast.Name) and tg.id == "GAME"
+                        for tg in node.targets) \
+                        and isinstance(node.value, _ast.Dict):
+                    keys = [k.value for k in node.value.keys
+                            if isinstance(k, _ast.Constant)]
+                    declared = "type" in keys
+            if not declared:
+                missing.append(f.name)
+        for f in sorted(GAMES_DIR.glob("*.json")):
+            raw = json.loads(f.read_text())
+            if "type" not in raw:
+                missing.append(f.name)
+        self.assertEqual(missing, [])
+
+
 class ContentTypeTests(unittest.TestCase):
     def test_legacy_kinds_resolve_to_types(self):
         pack, err = ce.validate_pack({
