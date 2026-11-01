@@ -13,6 +13,84 @@ vertical slice, not four separate prototypes.
 
 ---
 
+## Install
+
+Native Linux app (GTK 3 + VTE). No web pages, no WebKit, no local
+servers — it looks and behaves like an ordinary terminal.
+
+### 1. System packages
+
+Ubuntu / Debian:
+
+```bash
+sudo apt install git python3-gi python3-gi-cairo \
+    gir1.2-gtk-3.0 gir1.2-vte-2.91
+```
+
+Fedora: `sudo dnf install python3-gobject gtk3 vte291`.
+Python 3.11+ runs the sources; the release binary is self-contained.
+
+### 2. Clone (with the content submodule)
+
+```bash
+git clone --recurse-submodules https://github.com/FastAnt/meta_hack.git
+cd meta_hack/agent-aware-terminal
+```
+
+Already cloned without submodules?
+`git submodule update --init` from the repo root — the games/facts
+catalogue lives in `games-base/`.
+
+### 3. Keys (optional, git-ignored)
+
+Create `keys.sh` in this folder (never commit it; real environment
+variables win over the file):
+
+```bash
+export MODEL_API_KEY="LLM|..."            # Meta Model API (dev.meta.ai)
+export SYSTEM_1_MODEL_API_KEY="liquid_..."  # Liquid AI System-1 (d1.1)
+```
+
+Both are optional: with no Liquid key the app runs on measured
+process/screen heuristics only; with no keys at all the terminal,
+the status square and the built-in catalogue still work — the
+model-judged scores and image verdicts stay off.
+
+### 4. Run
+
+From sources:
+
+```bash
+./run.sh
+```
+
+Or build the standalone binary (creates `.venv-build/`, needs
+network once for pip):
+
+```bash
+./build-binary.sh
+./dist/agent-aware-terminal/agent-aware-terminal
+```
+
+Optional: `desktop/install-desktop.sh` adds a launcher icon.
+
+### 5. First run
+
+Open any project in the terminal and work as usual. Run your
+coding agent (`claude`, `codex`, `kilo`, …) *in this terminal*:
+the square on the right mirrors its state, content opens beside
+it while you wait, and a finished turn leaves a DONE with
+measured file counts and judged scores. `Ctrl+Shift+O` toggles
+the overlay; the bulb button asks the content researcher to
+generate project-specific news, ideas, facts and quizzes into
+`<project>/.aat/content`.
+
+Tests: `.venv/bin/python -m unittest discover -s backend/tests`
+(build the venv with `python3 -m venv .venv && .venv/bin/pip
+install requests pycairo` if missing).
+
+---
+
 ## Quick start
 
 This is a **regular terminal application**: GTK 3 + VTE, no web pages, no
