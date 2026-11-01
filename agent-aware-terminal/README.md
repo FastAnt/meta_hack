@@ -316,6 +316,16 @@ Only Muse has a log adapter. Other agent CLIs found in the terminal
 
 ## Companion content (games while the agent works)
 
+Selection is contextual, not random: a local vector index
+(MiniLM ONNX embeddings in SQLite; hashed-vector fallback)
+retrieves the closest not-yet-shown items for the current
+project + task — project content from `.aat/content` first —
+and System-1 picks the best of the top 10. ♥/✕ reactions bend
+future ranking (liked centroid boosts, disliked penalizes),
+and when neither project nor global content fits, the app
+files a generation request for the researcher agent
+(`.aat/research/generation_requests.jsonl`).
+
 When the agent has been busy for more than 10 seconds, the left
 pane switches from the terminal to companion content; clicking
 the square brings the terminal back. Content is served by
