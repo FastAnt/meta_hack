@@ -655,7 +655,7 @@ class Core:
                     if out and out["choice"] in (
                             "idle_at_prompt", "finished") and re.search(
                             r"esc to interrupt|Working \(\d",
-                            "\n".join(_lines[-5:])):
+                            "\n".join(_lines[-8:])):
                         # The screen itself proves work is in
                         # progress ("Working (1m 42s - esc to
                         # interrupt)"); a model verdict cannot
@@ -678,6 +678,36 @@ class Core:
                         self._screen_turn_tick(
                             agent.get("agent"), out["choice"],
                             out["confidence"])
+                    if out and out["confidence"] >= 0.45 and not (
+                            out["mode"] in ("shuffle", "question")
+                            and out["confidence"] < 0.6):
+                        # Display hysteresis: work verdicts apply
+                        # at once, but a single "rest" verdict
+                        # (blinky/done) between steps must not
+                        # drop the animation and yank the pane
+                        # back to the terminal — rest needs two
+                        # consecutive samples, like turn ends.
+                        if out["mode"] in ("blinky", "done"):
+                            cur = getattr(self, "mode_override",
+                                          None)
+                            fresh = cur and time.time() \
+                                - cur.get("at", 0) < 9
+                            if fresh and cur.get("mode") not in (
+                                    "blinky", "done", None):
+                                self._rest_pending = getattr(
+                                    self, "_rest_pending", 0) + 1
+                                if self._rest_pending < 2:
+                                    self.dlog(
+                                        "system1",
+                                        "rest verdict held "
+                                        f"({self._rest_pending}/2)")
+                                    out = None
+                                else:
+                                    self._rest_pending = 0
+                            else:
+                                self._rest_pending = 0
+                        else:
+                            self._rest_pending = 0
                     if out and out["confidence"] >= 0.45 and not (
                             out["mode"] in ("shuffle", "question")
                             and out["confidence"] < 0.6):
