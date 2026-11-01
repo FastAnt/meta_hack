@@ -1214,6 +1214,8 @@ def build_css(dark: bool) -> bytes:
 button.choice {{ background: transparent; color: {p['body']}; border: 1px solid {p['border']}; border-radius: 12px; padding: 12px 14px; font-family: {GROTESK}; font-size: 15px; box-shadow: none; }}
 button.choice:hover {{ border-color: {p['text']}; color: {p['text']}; }}
 button.choice-right {{ background: {p['text']}; color: {p['bg']}; border-color: {p['text']}; }}
+.fb-ok {{ font-size: 15px; font-weight: 600; color: {p['text']}; }}
+.fb-no {{ font-size: 15px; font-weight: 600; color: {p['muted']}; }}
 button.choice-wrong {{ color: {p['muted']}; border-color: {p['muted']}; }}
 button.game-next {{ background: transparent; color: {p['text']}; border: 1px solid {p['text']}; border-radius: 9999px; padding: 7px 16px; font-family: {GROTESK}; font-size: 13px; box-shadow: none; }}
 button.feed-action {{ background: transparent; color: {p['body']}; border: 1px solid {p['border']}; border-radius: 9999px; min-width: 38px; min-height: 32px; font-family: {GROTESK}; font-size: 15px; box-shadow: none; }}
@@ -2385,11 +2387,6 @@ def run_gui(project_arg: str | None) -> int:
         game_box.set_margin_start(34)
         game_box.set_margin_end(34)
         top_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        S["game_kicker"] = Gtk.Label(label="")
-        S["game_kicker"].get_style_context().add_class("content-kicker")
-        S["game_progress"] = Gtk.Label(label="")
-        S["game_progress"].get_style_context().add_class("content-sub")
-        top_row.pack_start(S["game_kicker"], False, False, 0)
         game_box.pack_start(top_row, False, False, 0)
         S["game_title"] = Gtk.Label(label="")
         S["game_title"].get_style_context().add_class("content-soon")
@@ -2456,7 +2453,6 @@ def run_gui(project_arg: str | None) -> int:
             "clicked", lambda *_: game_placeholder("ideas"))
         top_row.pack_end(S["btn_idea"], False, False, 0)
         top_row.pack_end(S["btn_gen"], False, False, 4)
-        top_row.pack_end(S["game_progress"], False, False, 10)
         S["game_box"] = game_box
         content.pack_start(game_box, True, True, 0)
         empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
@@ -2667,7 +2663,10 @@ def run_gui(project_arg: str | None) -> int:
                          else "manual Next")
                       + "; statistics sandboxed)")
 
-        def _anim_tick():
+        def _anim_frame(_widget, _clock, _data=None):
+            # Frame-clock redraw: synced to the display refresh
+            # (60 Hz) instead of a coarse 50 ms timer, so game
+            # motion is sampled smoothly. Cheap guard first.
             game = S["game_ctl"].get("game")
             if S["overlay_on"] and game \
                     and ((game.get("scene") or {}).get("anim")
@@ -2676,7 +2675,7 @@ def run_gui(project_arg: str | None) -> int:
                     == "content":
                 S["game_scene"].queue_draw()
             return True
-        GLib.timeout_add(50, _anim_tick)
+        S["game_scene"].add_tick_callback(_anim_frame, None)
         GLib.timeout_add(280, tick)
         if os.environ.get("AAT_OPEN_OVERLAY"):
             GLib.timeout_add(1300, lambda: (set_overlay(True), False)[1])
@@ -2775,13 +2774,6 @@ def run_gui(project_arg: str | None) -> int:
         S["game_empty"].hide()
         S["game_box"].show_all()
         ptype = game.get("type", "game")
-        _tag = {"game": "GAME", "news": "NEWS", "idea": "IDEA",
-                "fact": "FACT"}.get(ptype, "GAME")
-        S["game_kicker"].set_text(
-            (_tag + " · " + (game.get("kicker") or game.get("topic")
-                             or "")).strip(" ·").upper())
-        i, n = engine.progress()
-        S["game_progress"].set_text(f"{i} / {n}" if n else "")
         S["game_title"].set_text(game.get("title", ""))
         S["game_hint"].set_text(game.get("hint", ""))
         S["game_body"].set_text(game.get("body", ""))
@@ -2802,6 +2794,9 @@ def run_gui(project_arg: str | None) -> int:
             S["game_choices"].pack_start(btn, False, False, 0)
             btn.show()
         S["game_fb"].set_text("")
+        _fb_ctx = S["game_fb"].get_style_context()
+        _fb_ctx.remove_class("fb-ok")
+        _fb_ctx.remove_class("fb-no")
         S["btn_save"].set_sensitive(True)
         # Type drives the actions: games answer for points and
         # get Next after answering; facts/news skip freely;
@@ -2861,8 +2856,15 @@ def run_gui(project_arg: str | None) -> int:
         ctl["chosen"] = target
         out = engine.answer(target)
         expl = out.get("explanation") or ""
-        head = {True: "Correct. ", False: "Not quite. "}.get(
-            out["correct"], "")
+        head = {True: "\u2713 Correct. ",
+                False: "\u2717 Not quite. "}.get(out["correct"], "")
+        ctx = S["game_fb"].get_style_context()
+        ctx.remove_class("fb-ok")
+        ctx.remove_class("fb-no")
+        if out["correct"] is True:
+            ctx.add_class("fb-ok")
+        elif out["correct"] is False:
+            ctx.add_class("fb-no")
         tail = ""
         if game.get("kind", "quiz") == "quiz":
             sc = engine.score
