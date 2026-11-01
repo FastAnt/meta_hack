@@ -513,3 +513,47 @@ class VanishResolutionTests(CoreScenarioTests):
             time.sleep(0.1)
         self.assertEqual(self.core.results["source"],
                          "heuristic (no LIQUID_API_KEY)")
+
+
+class CpuBusyTests(unittest.TestCase):
+    """Interactive agents keep permanent idle children (Codex's
+    code-mode host): headcount is not busy. CPU burn is."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.mkdtemp()
+        self.native = _native()
+        self.core = self.native.Core(self._tmp)
+        self.core.liquid.api_key = ""
+        self.core.adapter.stop()
+
+    def _snap(self, codex_cpu, host_cpu):
+        tree = [
+            {"pid": 10, "ppid": 1, "comm": "codex",
+             "cmdline": "codex", "cpu": codex_cpu},
+            {"pid": 11, "ppid": 10, "comm": "codex-code-mode-host",
+             "cmdline": "codex-code-mode-host", "cpu": host_cpu},
+        ]
+        return {"cwd": self._tmp,
+                "foreground": {"pid": 10, "process": "codex",
+                               "cmdline": "codex"},
+                "shell_pid": 1, "command_running": True,
+                "agent_cli_detected": "codex", "agent_pid": 10,
+                "process_tree": tree,
+                "inferred": {"state": "tool_running"}}
+
+    def test_idle_host_child_is_not_busy(self):
+        self.core.snapshot = self._snap(100, 50)
+        self.core.refresh_agent_state()
+        self.core.snapshot = self._snap(100, 50)
+        self.core.refresh_agent_state()
+        self.core.snapshot = self._snap(101, 50)
+        self.core.refresh_agent_state()
+        self.assertEqual(self.core.agent_state["state"], "idle")
+
+    def test_cpu_burn_is_busy(self):
+        self.core.snapshot = self._snap(100, 50)
+        self.core.refresh_agent_state()
+        self.core.snapshot = self._snap(160, 55)
+        self.core.refresh_agent_state()
+        self.assertEqual(self.core.agent_state["state"], "working")

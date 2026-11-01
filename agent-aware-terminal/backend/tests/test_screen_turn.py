@@ -130,3 +130,120 @@ class ClassifyScheduleTests(unittest.TestCase):
         self.assertTrue(c._classify_due(108.0, "final"))
         c._screen_at = 108.0
         self.assertFalse(c._classify_due(112.0, "final"))
+
+
+class InferredShortTurnTests(unittest.TestCase):
+    """A turn that fits between polls: idle_at_prompt, screen
+    changes, finished — the cycle itself closes the turn."""
+
+    def setUp(self):
+        import tempfile
+        self.core = object.__new__(_native().Core)
+        self.core._tmp = tempfile.mkdtemp()
+        self.core.project_path = self.core._tmp
+        self.core._baseline = None
+        self.core.results = None
+        self.core._screen_hash = 111
+        self.core._screen_turn_active = False
+        self.core._busy_started_at = None
+        self.core._agent_key_now = "codex:1"
+        self.core.decisions = []
+        self.core.liquid = type("L", (), {
+            "configured": False,
+            "evaluate_session": lambda s, x: None})()
+
+    def test_cycle_closes_the_unseen_turn(self):
+        c = self.core
+        c._screen_turn_tick("codex", "idle_at_prompt", 0.8,
+                            "banner\n> Ask Codex")
+        # the screen moved: Q + A appeared between polls
+        c._screen_turn_tick("codex", "finished", 0.85,
+                            "banner\n> 2+2?\n4.\n> Ask Codex")
+        self.assertEqual(c._last_outcome["mode"], "done")
+        self.assertIsNotNone(c.results)
+        self.assertFalse(c.results["files_measured"])
+        self.assertEqual(c.results["files"], [])
+
+    def test_finished_without_cycle_does_nothing(self):
+        c = self.core
+        c._screen_turn_tick("codex", "finished", 0.9)
+        self.assertFalse(getattr(c, "_last_outcome", None))
+        self.assertIsNone(c.results)
+
+    def test_unchanged_screen_does_nothing(self):
+        c = self.core
+        c._screen_turn_tick("codex", "idle_at_prompt", 0.8,
+                            "same screen")
+        c._screen_turn_tick("codex", "finished", 0.9,
+                            "same screen")
+        self.assertIsNone(c.results)
+
+
+class ReopenCooldownTests(unittest.TestCase):
+    """Late work verdicts about the closing screen cannot
+    reopen the turn; genuinely new on-screen work can."""
+
+    def setUp(self):
+        self.core = object.__new__(_native().Core)
+        self.core._screen_hash = 555
+        self.core._closed_screen_hash = 555
+        self.core._turn_closed_at = time.time()
+        self.core._screen_turn_active = False
+        self.core._last_outcome = {"agent": "codex",
+                                   "mode": "done"}
+        self.core._start_baseline = lambda: None
+        self.core.decisions = []
+
+    def test_same_screen_work_verdict_ignored(self):
+        self.core._screen_turn_tick("codex", "writing_code", 0.9)
+        self.assertFalse(self.core._screen_turn_active)
+        self.assertEqual(self.core._last_outcome["mode"], "done")
+
+    def test_changed_screen_opens(self):
+        self.core._screen_hash = 777
+        self.core._screen_turn_tick("codex", "writing_code", 0.9)
+        self.assertTrue(self.core._screen_turn_active)
+
+
+import time  # noqa: E402  (used by ReopenCooldownTests)
+
+
+class ReceiptInferenceTests(unittest.TestCase):
+    """A new 'Worked for Ns' receipt after a resting snapshot
+    closes a turn nobody saw — measured from the text itself."""
+
+    def setUp(self):
+        import tempfile
+        self.core = object.__new__(_native().Core)
+        self.core.decisions = []
+        self.core.liquid = type("L", (), {
+            "configured": False,
+            "evaluate_session": lambda s, x: None})()
+        self.core.project_path = tempfile.mkdtemp()
+        self.core._baseline = None
+        self.core.results = None
+        self.core._busy_started_at = None
+        self.core._screen_turn_active = False
+        self.core._agent_key_now = "codex:1"
+        self.core._screen_hash = 1
+        self.core._screen_quiet_since = time.time()
+
+    def test_new_receipt_closes_turn(self):
+        c = self.core
+        c._screen_tail = "old answer\nWorked for 9s\n> prompt"
+        c._screen_turn_tick("codex", "idle_at_prompt", 0.8)
+        scr = ("old answer\nWorked for 9s\n> question\n"
+               "new answer\nWorked for 4s\n> prompt")
+        c._screen_quiet_tick("codex", scr)   # registers the change
+        c._screen_quiet_tick("codex", scr)   # now the receipt reads
+        self.assertIsNotNone(c.results)
+        self.assertEqual(c._last_outcome["mode"], "done")
+        self.assertFalse(c.results["files_measured"])
+
+    def test_no_new_receipt_no_close(self):
+        c = self.core
+        c._screen_tail = "old answer\nWorked for 9s\n> prompt"
+        c._screen_turn_tick("codex", "idle_at_prompt", 0.8)
+        c._screen_quiet_tick(
+            "codex", "old answer\nWorked for 9s\n> prompt")
+        self.assertIsNone(c.results)

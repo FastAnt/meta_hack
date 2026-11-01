@@ -379,20 +379,29 @@ class Core:
         measured files + a System-1 verdict over the console tail."""
         if getattr(self, "_finalized_at", 0) \
                 and time.time() - self._finalized_at < 15 \
+                and getattr(self, "_finalized_agent", None) == agent \
                 and self.results and self.results.get("observed"):
             return  # this turn was already finalized
         self._finalized_at = time.time()
+        self._finalized_agent = agent
         root = getattr(self, "_turn_root", None) \
             or self.project_path
         self._turn_root = None
-        if self._baseline is not None:
+        _unknown = getattr(self, "_files_unknown", False)
+        if _unknown:
+            self._files_unknown = False
+            self._baseline = None
+            files = []
+        elif self._baseline is not None:
             files = session_diff(root, self._baseline)
             self._baseline = None
         else:
             files = git_changes_scoped(root) or []
         self.results = {"files": files, "completion": None,
                         "safety": None, "source": "pending",
-                        "final_state": final, "observed": True}
+                        "final_state": final, "observed": True,
+                        "files_measured": files is not None
+                        and not _unknown}
         results_ref = self.results
         excerpt = (getattr(self, "_screen_tail", "") or "")[-1200:]
 
@@ -531,6 +540,16 @@ class Core:
                    "writing_code", "installing", "downloading",
                    "compiling", "running_tests", "waiting_for_user",
                    "asking_question"}
+    # Agents print their own completion receipts ("Worked for
+    # 36s"). A NEW receipt line after a resting snapshot is a
+    # measured completion — no model vote involved.
+
+    @staticmethod
+    def _receipt_count(text: str) -> int:
+        import re as _re
+        return len(_re.findall(
+            r"(?:Worked|Cooked|Baked|Cogitated|Churned) for \d+",
+            text or ""))
     # Settings: how long a non-work screen verdict must persist
     # before a screen-driven turn counts as ended.
     TURN_END_CONFIRM_S = float(
@@ -559,7 +578,8 @@ class Core:
             return True
         return False
 
-    def _screen_turn_tick(self, agent_name, choice, conf):
+    def _screen_turn_tick(self, agent_name, choice, conf,
+                          screen_text=""):
         """A screen verdict's only state powers: OPEN a turn on
         work, remember a failure. Everything else is flavor for
         the animation. Turns close deterministically (process
@@ -567,12 +587,22 @@ class Core:
         proved too flaky to hold state (mid-turn prompt flashes
         armed DONE; single samples dropped the square to idle)."""
         if choice in self.SCREEN_WORK and conf >= 0.45:
+            self._rest_choice = "working"
             if not getattr(self, "_screen_turn_active", False):
+                closed_at = getattr(self, "_turn_closed_at", 0.0)
+                if time.time() - closed_at < 12 and \
+                        getattr(self, "_screen_hash", None) \
+                        == getattr(self, "_closed_screen_hash",
+                                   object()):
+                    # Same screen the turn closed on, seconds
+                    # later: a late or hallucinating work verdict
+                    # about the OLD screen. Real new work changes
+                    # the text; it may open then.
+                    return
                 self._screen_turn_active = True
                 self._screen_turn_failed = False
                 self._screen_turn_since = time.time()
                 self._screen_turn_agent = agent_name
-                self._finalized_at = 0.0
                 self._start_baseline()
             oc = self._last_outcome
             if oc and oc.get("mode") == "done" \
@@ -593,6 +623,52 @@ class Core:
                 # the refresh loop resolve with the last verdict.
                 vanish["last_choice"] = "failed"
             return
+        if choice == "idle_at_prompt":
+            # Remember the resting state: a later "finished"
+            # over a CHANGED screen means a whole turn happened
+            # between polls.
+            # Anchor on the screen THE VERDICT SAW, not the
+            # live tail: by the time an async verdict lands, a
+            # fast turn may already be over, and anchoring on
+            # the present would record the post-turn state as
+            # the resting one.
+            self._rest_choice = "idle_at_prompt"
+            self._rest_agent = agent_name
+            self._rest_hash = hash((screen_text or "")[-900:])
+            self._rest_at = time.time()
+            self._rest_receipts = self._receipt_count(
+                screen_text)
+        elif choice == "finished" and conf >= 0.6 \
+                and not getattr(self, "_screen_turn_active",
+                                False) \
+                and getattr(self, "_rest_choice", None) \
+                == "idle_at_prompt" \
+                and getattr(self, "_rest_agent", None) \
+                == agent_name \
+                and hash((screen_text or "")[-900:]) \
+                != getattr(self, "_rest_hash", None) \
+                and not getattr(self, "_busy_started_at", None) \
+                and time.time() - getattr(self, "_rest_at", 0) \
+                < 180:
+            # A submit -> answer cycle completed between polls:
+            # the agent waited, the screen moved, it now reads
+            # finished. Close the turn we never saw open. Files
+            # were never baselined — report them unmeasured
+            # rather than inventing a count.
+            self._rest_choice = "finished"
+            self._last_outcome = {
+                "key": getattr(self, "_agent_key_now", None),
+                "agent": agent_name, "mode": "done"}
+            self._turn_closed_at = time.time()
+            self._closed_screen_hash = getattr(
+                self, "_screen_hash", None)
+            self._files_unknown = True
+            self._baseline = None
+            secs = int(time.time() - self._rest_at)
+            self.dlog("mode", "short turn inferred from screen "
+                              f"cycle ({agent_name}, <= {secs}s)")
+            self._finish_observed_turn(agent_name, "completed",
+                                       secs)
         if choice in ("finished", "idle_at_prompt"):
             vanish = getattr(self, "_vanish", None)
             if vanish and vanish["agent"] == agent_name:
@@ -604,6 +680,9 @@ class Core:
                         "key": vanish.get("key"),
                         "agent": agent_name, "mode": "done"}
                     self._vanish = None
+                    self._turn_closed_at = time.time()
+                    self._closed_screen_hash = getattr(
+                        self, "_screen_hash", None)
                     self.dlog("mode", "vanished agent finished -> "
                                       f"sticky done ({agent_name})")
                     self._screen_turn_active = False
@@ -623,6 +702,43 @@ class Core:
             self._screen_quiet_since = time.time()
             return
         if not getattr(self, "_screen_turn_active", False):
+            if os.environ.get("AAT_DEBUG_PERCEPTION"):
+                sig = (getattr(self, "_rest_choice", None),
+                       getattr(self, "_rest_agent", None),
+                       self._receipt_count(screen),
+                       getattr(self, "_rest_receipts", None),
+                       bool(getattr(self, "_busy_started_at",
+                                    None)),
+                       len(screen or ""),
+                       "Worked" in (screen or ""))
+                if sig != getattr(self, "_dbg_sig", None):
+                    self._dbg_sig = sig
+                    self.dlog("mode", f"receipt gate: {sig} "
+                                      f"agent={agent_name}")
+            if getattr(self, "_rest_choice", None) \
+                    == "idle_at_prompt" \
+                    and getattr(self, "_rest_agent", None) \
+                    == agent_name \
+                    and self._receipt_count(screen) \
+                    > getattr(self, "_rest_receipts", 0) \
+                    and not getattr(self, "_busy_started_at",
+                                    None):
+                self._rest_choice = "finished"
+                self._last_outcome = {
+                    "key": getattr(self, "_agent_key_now", None),
+                    "agent": agent_name, "mode": "done"}
+                self._turn_closed_at = time.time()
+                self._closed_screen_hash = getattr(
+                    self, "_screen_hash", None)
+                self._files_unknown = True
+                self._baseline = None
+                secs = int(time.time()
+                           - getattr(self, "_rest_at", 0))
+                self.dlog("mode", "turn receipt appeared -> "
+                                  f"done ({agent_name}, "
+                                  f"<= {secs}s, unseen turn)")
+                self._finish_observed_turn(
+                    agent_name, "completed", secs)
             return
         if agent_name != getattr(self, "_screen_turn_agent", None):
             return
@@ -635,6 +751,9 @@ class Core:
                 or time.time() - started < 5:
             return
         self._screen_turn_active = False
+        self._turn_closed_at = time.time()
+        self._closed_screen_hash = getattr(
+            self, "_screen_hash", None)
         failed = getattr(self, "_screen_turn_failed", False)
         if not failed:
             self._last_outcome = {
@@ -734,7 +853,7 @@ class Core:
                                   f"{' [image]' if out.get('via') else ''}")
                         self._screen_turn_tick(
                             agent.get("agent"), out["choice"],
-                            out["confidence"])
+                            out["confidence"], screen)
                     if out and out["confidence"] >= 0.45 and not (
                             out["mode"] in ("shuffle", "question")
                             and out["confidence"] < 0.6):
@@ -964,6 +1083,25 @@ class Core:
                             family.add(pr.get("pid"))
                             changed = True
                 busy = len(family) > 1
+                # A permanent idle child (Codex's code-mode
+                # host) made family>1 read "working" forever,
+                # wedging every turn closer. Busy means the
+                # family is BURNING CPU — measured, not counted.
+                cpus = {pr["pid"]: pr.get("cpu") for pr in tree
+                        if pr.get("pid") in family}
+                if getattr(self, "_fam_cpu_agent", None) != apid:
+                    self._fam_cpu = {}
+                    self._fam_cpu_hist = (0, 0)
+                    self._fam_cpu_agent = apid
+                prev = getattr(self, "_fam_cpu", {}) or {}
+                if cpus and all(v is not None
+                                for v in cpus.values()) and prev:
+                    delta = sum(max(0, cpus[k] - prev.get(
+                        k, cpus[k])) for k in cpus)
+                    hist = getattr(self, "_fam_cpu_hist", (0, 0))
+                    self._fam_cpu_hist = (hist[1], delta)
+                    busy = max(self._fam_cpu_hist) >= 10
+                self._fam_cpu = cpus
             self.agent_state = {
                 "agent": cli, "state": "working" if busy else "idle",
                 "activity": (snap.get("foreground") or {}).get("cmdline", ""),
@@ -1035,6 +1173,11 @@ class Core:
             # for one tick. Give the screen a few seconds to tell
             # the ending before calling it an interruption.
             self._vanish = {"agent": prev_view[0], "at": time.time(),
+                            "since": getattr(
+                                self, "_busy_started_at", None)
+                            or getattr(
+                                self, "_screen_turn_since", None)
+                            or time.time(),
                             "key": getattr(self, "_agent_key_now", None)}
             self.dlog("mode", "agent vanished; resolving ending "
                               f"({prev_view[0]})")
@@ -1054,7 +1197,8 @@ class Core:
                                   f"fail ({vanish['agent']})")
                 self._finish_observed_turn(
                     vanish["agent"], "failed",
-                    getattr(self, "_last_turn_secs", 0))
+                    int(time.time() - vanish.get("since",
+                                                 time.time())))
             elif age > 3 and last == "finished":
                 self._last_outcome = {
                     "key": vanish.get("key"),
@@ -1064,7 +1208,8 @@ class Core:
                                   f"done ({vanish['agent']})")
                 self._finish_observed_turn(
                     vanish["agent"], "completed",
-                    getattr(self, "_last_turn_secs", 0))
+                    int(time.time() - vanish.get("since",
+                                                 time.time())))
             elif age > 6 and last == "idle_at_prompt":
                 # The process is gone and the screen rests at a
                 # prompt: the turn ended. Calling that an
@@ -1080,7 +1225,8 @@ class Core:
                                   "prompt at rest)")
                 self._finish_observed_turn(
                     vanish["agent"], "completed",
-                    getattr(self, "_last_turn_secs", 0))
+                    int(time.time() - vanish.get("since",
+                                                 time.time())))
             elif age > 14:
                 # Gone with no failure evidence: ended. (Real
                 # interruptions arrive via ^C evidence on the
@@ -1094,7 +1240,8 @@ class Core:
                                   f"({vanish['agent']}, unresolved)")
                 self._finish_observed_turn(
                     vanish["agent"], "completed",
-                    getattr(self, "_last_turn_secs", 0))
+                    int(time.time() - vanish.get("since",
+                                                 time.time())))
 
         if not cur_agent and time.time() < getattr(
                 self, "_interrupt_until", 0):
@@ -3810,6 +3957,21 @@ def run_gui(project_arg: str | None) -> int:
             return True
         S["game_scene"].add_tick_callback(_anim_frame, None)
         GLib.timeout_add(280, tick)
+        if os.environ.get("AAT_TYPE"):
+            # Demo/test keystrokes: type text into the terminal,
+            # then Enter separately (TUIs treat a fast paste
+            # differently from a deliberate submit).
+            _type_text = os.environ["AAT_TYPE"]
+            _type_delay = int(float(
+                os.environ.get("AAT_TYPE_DELAY_S", "8")) * 1000)
+
+            def _type_it():
+                S["vte"].feed_child(_type_text.encode())
+                GLib.timeout_add(
+                    800, lambda: (S["vte"].feed_child(b"\r"),
+                                  False)[1])
+                return False
+            GLib.timeout_add(_type_delay, _type_it)
         if os.environ.get("AAT_OPEN_OVERLAY"):
             GLib.timeout_add(1300, lambda: (set_overlay(True), False)[1])
         if os.environ.get("AAT_SPLIT"):
@@ -5345,7 +5507,10 @@ def run_gui(project_arg: str | None) -> int:
             if show_res:
                 files = res["files"]
                 S["res_squares"]["files"].set_files(files)
-                S["res_labels"]["files"].set_text(f"FILES · {len(files)}")
+                S["res_labels"]["files"].set_text(
+                    f"FILES · {len(files)}"
+                    if res.get("files_measured", True)
+                    else "FILES · –")
                 for key, caption in (("completion", "DONE"),
                                      ("safety", "SAFE")):
                     sc = res.get(key)

@@ -50,8 +50,12 @@ def _proc_info(pid: int) -> dict | None:
         with open(f"/proc/{pid}/cmdline", "rb") as fh:
             cmdline = fh.read().decode(errors="replace").replace("\0", " ").strip()
         cwd = os.readlink(f"/proc/{pid}/cwd")
+        try:
+            cpu = int(fields[11]) + int(fields[12])
+        except Exception:
+            cpu = None
         return {"pid": pid, "comm": comm, "ppid": ppid,
-                "cmdline": cmdline, "cwd": cwd}
+                "cmdline": cmdline, "cwd": cwd, "cpu": cpu}
     except Exception:
         return None
 
@@ -153,8 +157,9 @@ class SessionObserver(threading.Thread):
             "agent_cli_detected": agent_cli,
             "process_tree": [{"pid": p["pid"], "ppid": p["ppid"],
                               "process": p["comm"],
-                              "cmdline": (p["cmdline"] or "")[:120]}
-                             for p in tree[:25]],
+                              "cmdline": (p["cmdline"] or "")[:120],
+                              "cpu": p.get("cpu")}
+                             for p in tree[:200]],
             "agent_pid": _agent_pid(tree, agent_cli),
             "inferred": {"state": inferred_state, "confidence": confidence,
                          "source": "heuristic"},
