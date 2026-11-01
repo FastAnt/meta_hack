@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -1475,6 +1477,46 @@ _SCREEN_RULES = (
 )
 
 
+def creator_task_text(app_root, project_root, want_type,
+                      task: str = "") -> str:
+    """One-item mission for the creator agent (Muse today).
+    The agent is a separate content researcher: it reads the
+    component skill, grounds the item in the real project, and
+    writes only inside the project's .aat/ folder."""
+    return (
+        "You are the Content Researcher for Agent-Aware Terminal "
+        "(a separate content agent, not the coding agent).\n"
+        f"1. Read and follow {app_root}/content-researcher/SKILL.md .\n"
+        f"2. Study the project at {project_root} (README, layout, "
+        "key sources). The user's latest task there: "
+        f"{task or '(unknown)'}.\n"
+        f"3. Create exactly ONE content pack of type \"{want_type}\" "
+        "about THIS project and deposit it in "
+        f"{project_root}/.aat/content/ :\n"
+        "   - game: a single-file Python module per "
+        f"{app_root}/games-base/AGENTS.md (GAME + paint + target_at);\n"
+        "   - fact: also a Python module with its own bespoke "
+        "visual (one fact = one picture, never a reused scene);\n"
+        "   - news / idea: a JSON card per the templates in "
+        f"{app_root}/content-researcher/templates/ (news needs a "
+        "real http(s) link; an idea needs an action_hint).\n"
+        f"4. Validate: python3 {app_root}/tools/test_game.py "
+        "<your file> must print ALL OK; for games/facts open the "
+        "rendered previews and fix anything broken or generic.\n"
+        "Hard limits: write ONLY inside "
+        f"{project_root}/.aat/ ; never edit production code; never "
+        "read or print API keys; one deliverable. Finish with one "
+        "line: the file you created.")
+
+
+def project_substance(profile: dict) -> tuple:
+    """Deterministic pre-gate for boot generation: is there
+    enough project here to tailor content to?"""
+    domains = profile.get("domains", [])
+    total = sum(d.get("score", 0) for d in domains[:3])
+    return total >= 10, f"domain evidence {total}"
+
+
 def _screen_rule_choice(screen: str):
     """Deterministic readings of the agent's own transcript.
     When the terminal literally prints 'Edited 2 files', no
@@ -1805,6 +1847,159 @@ def run_gui(project_arg: str | None) -> int:
         project_path=project_path,
         project_content_dir=Path(project_path) / ".aat" / "content")
     threading.Thread(target=selector.index, daemon=True).start()
+
+    # -- creator agent: the app may launch the content
+    # researcher itself (Muse is the configured creator today).
+    def spawn_creator(want_type, root, reason):
+        if S.get("_creator_proc") is not None:
+            return False
+        if os.environ.get("AAT_CREATOR") == "off":
+            core.dlog("content", "creator disabled (AAT_CREATOR=off)")
+            return False
+        root = str(root)
+        cmd = shlex.split(os.environ.get(
+            "AAT_CREATOR_CMD", "muse exec --yolo"))
+        task = (core.agent_state or {}).get("task") or ""
+        prompt = creator_task_text(RES_ROOT, root, want_type, task)
+        rdir = Path(root) / ".aat" / "research"
+        try:
+            rdir.mkdir(parents=True, exist_ok=True)
+            logfh = open(rdir / "creator.log", "a", encoding="utf-8")
+        except Exception as exc:
+            core.dlog("content", f"creator spawn failed: {exc}")
+            return False
+        try:
+            proc = subprocess.Popen(
+                cmd + [prompt], cwd=root, stdin=subprocess.DEVNULL,
+                stdout=logfh, stderr=subprocess.STDOUT,
+                start_new_session=True)
+        except Exception as exc:
+            core.dlog("content", f"creator spawn failed: {exc}")
+            return False
+        S["_creator_proc"] = proc
+        S["_creator_type"] = want_type
+        S["btn_idea"].set_sensitive(False)
+        S["game_fb"].set_text(
+            f"Creating a {want_type} for this project — the "
+            "researcher agent is working…")
+        core.dlog("content",
+                  f"creator spawned ({reason}): {want_type} "
+                  f"for {root}")
+
+        def _wait():
+            try:
+                code = proc.wait(timeout=900)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                code = -1
+            GLib.idle_add(_creator_done, root, code)
+
+        threading.Thread(target=_wait, daemon=True).start()
+        return True
+
+    def _creator_done(root, code):
+        S["_creator_proc"] = None
+        S["btn_idea"].set_sensitive(True)
+        core.dlog("content", f"creator finished (exit {code})")
+        engine.maybe_reload()
+        try:
+            packs, _ = ce.scan_packs(
+                [Path(root) / ".aat" / "content"])
+        except Exception:
+            packs = []
+        fresh = [pk for pk in packs
+                 if pk["id"] not in engine._served]
+        if fresh:
+            pack = engine.pack_by_id(fresh[-1]["id"])
+            if pack is not None:
+                serve_game(True, force_pack=pack)
+                S["game_fb"].set_text(
+                    "New project content: "
+                    + pack.get("title", pack["id"]))
+                return False
+        S["game_fb"].set_text(
+            "The researcher finished without new content "
+            "(log: .aat/research/creator.log).")
+        return False
+
+    def _boot_content_check():
+        """Opening a project with an empty local content base:
+        if the project is substantial enough (System-1 has the
+        final say), launch the creator once for starter
+        content. The generic catalogue is only a filler until
+        project content exists."""
+        time.sleep(4)
+        if _tour_raw or os.environ.get("AAT_MOCKSTATE") \
+                or os.environ.get("AAT_SIM_FILE") \
+                or os.environ.get("AAT_CREATOR") == "off":
+            return
+        root = Path(project_path)
+        try:
+            packs, _ = ce.scan_packs([root / ".aat" / "content"])
+        except Exception:
+            packs = []
+        if packs:
+            core.dlog("content", "project content base present "
+                                 f"({len(packs)} packs); no boot "
+                                 "generation")
+            return
+        marker = root / ".aat" / "research" / "boot_generation.json"
+        if marker.exists() and time.time() \
+                - marker.stat().st_mtime < 7 * 86400:
+            return
+        from backend.app import content_researcher as _crb
+        try:
+            prof = _crb.profile_project(str(root), "")
+        except Exception:
+            prof = {"domains": []}
+        ok, why = project_substance(prof)
+        if ok and core.liquid.configured:
+            try:
+                answers = core.liquid.decide(
+                    "A developer opened this project in an "
+                    "agent-aware terminal. Project domains: "
+                    + ", ".join(
+                        f"{d['label']} ({', '.join(d['evidence'][:5])})"
+                        for d in prof.get("domains", [])[:3]), {
+                        "worth": {
+                            "type": "noul",
+                            "instructions":
+                                "Is this project substantial and "
+                                "specific enough that a tailored "
+                                "fact, improvement idea, adjacent-"
+                                "tech news item or quiz question "
+                                "about IT would interest its "
+                                "developer more than generic "
+                                "programming content?"}})
+                val = (answers or {}).get("worth", {}).get("noul")
+                if val is not None and float(val) < 0.5:
+                    ok = False
+                    core.dlog("content", "system-1: project not "
+                                         "worth tailored content "
+                                         f"({float(val):.2f})")
+            except Exception:
+                pass
+        if not ok:
+            core.dlog("content", "empty project content base; "
+                                 f"not generating ({why})")
+            return
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text('{"at": %d}' % int(time.time()))
+        except Exception:
+            pass
+        core.dlog("content", "empty project content base; "
+                             "spawning creator for starter "
+                             f"content ({why})")
+        GLib.idle_add(
+            lambda: (spawn_creator("fact", str(root), "boot"),
+                     False)[1])
+
+    threading.Thread(target=_boot_content_check,
+                     daemon=True).start()
 
     app = Gtk.Application(
         application_id=os.environ.get("AAT_APP_ID",
@@ -3266,11 +3461,16 @@ def run_gui(project_arg: str | None) -> int:
 
         threading.Thread(target=_work, daemon=True).start()
 
-    def serve_game(advance=True):
+    def serve_game(advance=True, force_pack=None):
         ctl = S["game_ctl"]
         game = None
         if advance:
             _close_previous_serve()
+            if force_pack is not None:
+                game = engine.serve_specific(force_pack)
+                core.dlog("content",
+                          f"serving {force_pack['id']} "
+                          "(creator delivery)")
             pending = S.pop("_pending_pick", None)
             if pending:
                 pid, source, sim = pending
@@ -3280,7 +3480,7 @@ def run_gui(project_arg: str | None) -> int:
                     core.dlog("content",
                               f"selector -> {pid} [{source}, "
                               f"sim {sim:.2f}]")
-            if game is None:
+            if game is None and force_pack is None:
                 game = engine.next_game()
             _kick_pick()
             if game is not None and not _tour_raw:
@@ -3370,13 +3570,17 @@ def run_gui(project_arg: str | None) -> int:
         return random.choice(["game", "fact", "news", "idea"])
 
     def idea_pick_type():
+        if S.get("_creator_proc") is not None:
+            S["game_fb"].set_text(
+                "The researcher agent is already creating…")
+            return
         picked = choose_content_type()
-        S["game_fb"].set_text(
-            f"Next content to generate: {picked}. (Random pick "
-            "for now — statistics-based choice is a TODO; the "
-            "researcher agent will create it.)")
         core.dlog("content",
                   f"generation type picked: {picked} (random)")
+        if not spawn_creator(picked, core._work_root(), "bulb"):
+            S["game_fb"].set_text(
+                "Creator agent unavailable — see the decision "
+                "log ([content] creator …).")
 
     def game_open_link():
         game = S["game_ctl"].get("game") or {}
@@ -3940,6 +4144,14 @@ def run_gui(project_arg: str | None) -> int:
 
     def tick():
         agent, _comp = display_state()
+        if S.get("_creator_proc") is not None \
+                and not S["game_ctl"].get("answered"):
+            frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+            frame = frames[int(time.time() * 8) % len(frames)]
+            S["game_fb"].set_text(
+                f"{frame} Creating a {S.get('_creator_type')} "
+                "for this project — the researcher agent is "
+                "working…")
         if S.get("mode_btn"):
             S["mode_btn"].queue_draw()
         # Auto theme follows the system live (checked on this timer;

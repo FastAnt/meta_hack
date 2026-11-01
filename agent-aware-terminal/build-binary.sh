@@ -37,8 +37,9 @@ fi
   --hidden-import tokenizers \
   --collect-all tokenizers \
   --collect-all gi desktop/native_terminal.py
-rm -rf dist/agent-aware-terminal/content dist/agent-aware-terminal/games-base
+rm -rf dist/agent-aware-terminal/content dist/agent-aware-terminal/games-base dist/agent-aware-terminal/content-researcher
 cp -r games-base dist/agent-aware-terminal/games-base
+cp -r content-researcher dist/agent-aware-terminal/content-researcher
 echo "Base game packs copied next to the binary (external, from the games submodule)."
 echo
 echo "Done: dist/agent-aware-terminal/agent-aware-terminal"
