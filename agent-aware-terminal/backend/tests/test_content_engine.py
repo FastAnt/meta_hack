@@ -510,3 +510,42 @@ class RuntimeTypeFilterTests(unittest.TestCase):
         self.engine.set_type_filter({"game", "fact", "news", "idea"})
         self.assertIsNone(self.engine.filter_types)  # all four = All
         self.assertTrue(self.engine.matches(self.engine.packs[0]))
+
+
+class DeckExhaustionTests(unittest.TestCase):
+    """has_unseen drives the feed's honest end card."""
+
+    def test_unseen_until_pool_served(self):
+        import tempfile
+        from pathlib import Path
+        eng = ce.ContentEngine.__new__(ce.ContentEngine)
+        eng.packs = []
+        eng.deck = []
+        eng._served = []
+        eng._last = None
+        eng._current = None
+        eng.filter_types = None
+        import random as _r
+        eng._rng = _r.Random(7)
+        eng.state_path = None
+        eng.maybe_reload = lambda *a, **k: None
+        d = Path(tempfile.mkdtemp())
+        packs = []
+        for i in range(2):
+            f = d / f"n{i}.json"
+            f.write_text(json.dumps({
+                "id": f"news-x-{i}", "type": "news",
+                "title": f"N{i}", "body": "b",
+                "link": "https://example.com/x"}))
+            packs.append(f)
+        all_packs, _ = ce.scan_packs([d])
+        eng.packs = all_packs
+        eng.deck = list(all_packs)
+        eng.set_type_filter({"news"})
+        self.assertTrue(eng.has_unseen())
+        eng.next_game()
+        eng.next_game()
+        self.assertFalse(eng.has_unseen())
+        # next_game still cycles (replay), the GUI intercepts
+        # before it when has_unseen() is False.
+        self.assertIsNotNone(eng.next_game())

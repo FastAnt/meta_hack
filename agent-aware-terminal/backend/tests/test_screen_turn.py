@@ -247,3 +247,75 @@ class ReceiptInferenceTests(unittest.TestCase):
         c._screen_quiet_tick(
             "codex", "old answer\nWorked for 9s\n> prompt")
         self.assertIsNone(c.results)
+
+
+class MidTurnStallTests(unittest.TestCase):
+    """A network wait freezes the screen mid-turn: quiet alone
+    must not close the turn while the last verdict says work."""
+
+    def setUp(self):
+        self.core = object.__new__(_native().Core)
+        self.core.decisions = []
+        self.core.liquid = type("L", (), {
+            "configured": False,
+            "evaluate_session": lambda s, x: None})()
+        self.core._screen_turn_active = True
+        self.core._screen_turn_agent = "codex"
+        self.core._screen_turn_since = time.time() - 60
+        self.core._screen_turn_failed = False
+        self.core._busy_started_at = None
+        self.core._last_outcome = None
+
+    def _tick_quiet(self, secs_ago=10):
+        scr = "frozen output"
+        self.core._screen_hash = hash(scr[-900:])
+        self.core._screen_quiet_since = time.time() - secs_ago
+        self.core._screen_quiet_tick("codex", scr)
+
+    def test_search_stall_does_not_close(self):
+        c = self.core
+        c._last_screen_choice = "searching_web"
+        c._last_screen_choice_at = time.time()
+        self._tick_quiet()
+        self.assertTrue(c._screen_turn_active)
+        self.assertIsNone(c._last_outcome)
+
+    def test_rest_verdict_lets_quiet_close(self):
+        c = self.core
+        c._last_screen_choice = "idle_at_prompt"
+        c._last_screen_choice_at = time.time()
+        c.project_path = "/tmp"
+        c._baseline = None
+        c.results = None
+        self._tick_quiet()
+        self.assertFalse(c._screen_turn_active)
+        self.assertEqual(c._last_outcome["mode"], "done")
+
+
+class PendingDoneTests(unittest.TestCase):
+    """Process-idle endings wait for the screen to agree."""
+
+    def setUp(self):
+        import tempfile
+        self.core = object.__new__(_native().Core)
+        self.core.decisions = []
+        self.core.liquid = type("L", (), {
+            "configured": False,
+            "evaluate_session": lambda s, x: None})()
+        self.core.project_path = tempfile.mkdtemp()
+        self.core._baseline = None
+        self.core.results = None
+        self.core._agent_key_now = "codex:1"
+        self.core._screen_quiet_since = time.time()
+
+    def test_defers_until_rest(self):
+        c = self.core
+        c._pending_done = {"agent": "codex", "secs": 40}
+        c._last_screen_choice = "thinking"
+        c._last_screen_choice_at = time.time()
+        c._maybe_arm_pending_done()
+        self.assertIsNone(c.results)
+        self.assertIsNotNone(c._pending_done)
+        c._screen_turn_tick("codex", "finished", 0.8, "screen")
+        self.assertIsNone(c._pending_done)
+        self.assertIsNotNone(c.results)

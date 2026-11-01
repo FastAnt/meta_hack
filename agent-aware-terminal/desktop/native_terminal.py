@@ -578,8 +578,41 @@ class Core:
             return True
         return False
 
+    def _at_rest(self) -> bool:
+        """Does the screen layer agree the agent is resting?
+        Mid-turn network waits freeze the screen and idle the
+        CPU while the agent is NOT done — a turn may only close
+        when the screen says rest too: a fresh rest verdict, or
+        a long (12 s) total freeze."""
+        ch = getattr(self, "_last_screen_choice", None)
+        at = getattr(self, "_last_screen_choice_at", 0.0)
+        if not at:
+            return True  # no screen layer: nothing disagrees
+        if ch in ("idle_at_prompt", "finished") \
+                and time.time() - at < 30:
+            return True
+        return time.time() - getattr(
+            self, "_screen_quiet_since", time.time()) >= 12
+
+    def _maybe_arm_pending_done(self):
+        """A process-layer turn end waits for the screen to
+        agree before DONE may show (see _at_rest)."""
+        pend = getattr(self, "_pending_done", None)
+        if not pend or not self._at_rest():
+            return
+        self._pending_done = None
+        self._last_outcome = {
+            "key": getattr(self, "_agent_key_now", None),
+            "agent": pend["agent"], "mode": "done"}
+        self.dlog("mode", "turn ended -> sticky done "
+                          f"({pend['agent']}, at rest)")
+        self._finish_observed_turn(pend["agent"], "completed",
+                                   pend["secs"])
+
     def _screen_turn_tick(self, agent_name, choice, conf,
                           screen_text=""):
+        self._last_screen_choice = choice
+        self._last_screen_choice_at = time.time()
         """A screen verdict's only state powers: OPEN a turn on
         work, remember a failure. Everything else is flavor for
         the animation. Turns close deterministically (process
@@ -587,6 +620,7 @@ class Core:
         proved too flaky to hold state (mid-turn prompt flashes
         armed DONE; single samples dropped the square to idle)."""
         if choice in self.SCREEN_WORK and conf >= 0.45:
+            self._pending_done = None
             self._rest_choice = "working"
             if not getattr(self, "_screen_turn_active", False):
                 closed_at = getattr(self, "_turn_closed_at", 0.0)
@@ -623,6 +657,8 @@ class Core:
                 # the refresh loop resolve with the last verdict.
                 vanish["last_choice"] = "failed"
             return
+        if choice in ("idle_at_prompt", "finished"):
+            self._maybe_arm_pending_done()
         if choice == "idle_at_prompt":
             # Remember the resting state: a later "finished"
             # over a CHANGED screen means a whole turn happened
@@ -701,6 +737,8 @@ class Core:
             self._screen_hash = h
             self._screen_quiet_since = time.time()
             return
+        if getattr(self, "_pending_done", None):
+            self._maybe_arm_pending_done()
         if not getattr(self, "_screen_turn_active", False):
             if os.environ.get("AAT_DEBUG_PERCEPTION"):
                 sig = (getattr(self, "_rest_choice", None),
@@ -749,6 +787,11 @@ class Core:
             self, "_screen_quiet_since", time.time())
         if quiet_for < self.TURN_END_CONFIRM_S \
                 or time.time() - started < 5:
+            return
+        if not self._at_rest():
+            # Frozen screen, but the last verdict says the
+            # agent is mid-work (a network wait, most likely):
+            # not an ending.
             return
         self._screen_turn_active = False
         self._turn_closed_at = time.time()
@@ -857,11 +900,22 @@ class Core:
                     if out and out["confidence"] >= 0.45 and not (
                             out["mode"] in ("shuffle", "question")
                             and out["confidence"] < 0.6):
-                        self.mode_override = {
-                            "mode": out["mode"], "at": time.time(),
-                            "choice": out["choice"],
-                            "confidence": out["confidence"],
-                            "screen": True}
+                        # Flavor changes its mind only when two
+                        # consecutive screenshots agree: single
+                        # samples misread too often (a warning
+                        # glyph became "waiting for user" at 0.94)
+                        # and the square jittered Thinking <->
+                        # shuffle. State never waits for this;
+                        # only the animation does.
+                        if getattr(self, "_flavor_pending", None) \
+                                == out["choice"]:
+                            self.mode_override = {
+                                "mode": out["mode"],
+                                "at": time.time(),
+                                "choice": out["choice"],
+                                "confidence": out["confidence"],
+                                "screen": True}
+                        self._flavor_pending = out["choice"]
                 except Exception as exc:
                     self.liquid_stats["screen_err"] += 1
                     self.dlog("system1", f"screen classify error: {exc}")
@@ -1133,6 +1187,7 @@ class Core:
                                f"(source={sig[2]})")
             busy_states = ("working", "tool_running")
             if sig[1] in busy_states:
+                self._pending_done = None
                 if self._busy_started_at is None:
                     self._busy_started_at = time.time()
                 if not prev or prev[1] not in busy_states:
@@ -1148,13 +1203,25 @@ class Core:
                     and time.time() - self._busy_started_at >= 5:
                 # An adapter-less agent finished a real turn: the
                 # outcome sticks until the next turn / new session.
-                self._last_outcome = {"key": self._agent_key_now,
-                                      "agent": sig[0], "mode": "done"}
-                self.dlog("mode", f"turn ended -> sticky done "
-                                  f"({sig[0]})")
-                self._finish_observed_turn(
-                    sig[0], "completed",
-                    int(time.time() - self._busy_started_at))
+                # But a CPU stall mid-turn (network wait) is not
+                # an ending: defer until the screen agrees.
+                if not self._at_rest():
+                    self._pending_done = {
+                        "agent": sig[0],
+                        "secs": int(time.time()
+                                    - self._busy_started_at)}
+                    self.dlog("mode", "process idle but screen "
+                                      "busy: ending deferred "
+                                      f"({sig[0]})")
+                else:
+                    self._last_outcome = {
+                        "key": self._agent_key_now,
+                        "agent": sig[0], "mode": "done"}
+                    self.dlog("mode", f"turn ended -> sticky done "
+                                      f"({sig[0]})")
+                    self._finish_observed_turn(
+                        sig[0], "completed",
+                        int(time.time() - self._busy_started_at))
             if sig[1] not in busy_states:
                 if self._busy_started_at:
                     self._last_turn_secs = int(
@@ -3440,7 +3507,11 @@ def run_gui(project_arg: str | None) -> int:
         S["game_next"] = Gtk.Button(label="Next \u2193")
         S["game_next"].get_style_context().add_class("game-next")
         S["game_next"].set_tooltip_text("Next card (swipe down)")
-        S["game_next"].connect("clicked", lambda *_: serve_game(True))
+        def _next_clicked(*_):
+            if S.get("at_end"):
+                S["_replay_ok"] = True
+            serve_game(True)
+        S["game_next"].connect("clicked", _next_clicked)
         S["game_prev"] = Gtk.Button(label="\u2191 Prev")
         S["game_prev"].get_style_context().add_class("game-next")
         S["game_prev"].set_tooltip_text("Previous card (swipe up)")
@@ -4288,6 +4359,40 @@ def run_gui(project_arg: str | None) -> int:
                 "Could not start the researcher — see the "
                 "decision log ([content] creator …).")
 
+    def _render_end_card():
+        """The filter's deck is exhausted: say so plainly.
+        News and ideas exist only as per-project creations, so
+        an exhausted deck also asks the researcher for more
+        (once per exhaustion); replay stays one click away."""
+        kind = S.get("content_filter", "all")
+        total = len(engine.packs_for())
+        noun = CONTENT_TYPE_UNITS.get(kind, "cards")
+        _show_empty(
+            "That's everything \u2014 for now",
+            f"All {total} {noun} available here have been "
+            "shown. New cards are written for this project by "
+            "the researcher \u2014 or press Next to start this "
+            "deck over.")
+        S["at_end"] = True
+        S["game_next"].set_label("\u21ba From the top")
+        S["game_next"].show()
+        _sync_filter_chips()
+        core.dlog("content",
+                  f"deck exhausted ({kind}: {total} seen)")
+        if kind in ("news", "idea") and not _tour_raw:
+            ok = spawn_creator(kind, core._work_root(),
+                               f"deck-exhausted-{kind}")
+            if ok:
+                _set_content_note(
+                    "The researcher is writing more "
+                    f"{noun} for this project\u2026")
+                core.dlog("content", f"deck exhausted: creator "
+                                     f"asked for {kind}")
+            elif _creator_busy():
+                _set_content_note(
+                    "The researcher is already creating "
+                    "content for this project\u2026")
+
     def set_content_filter(key: str, serve: bool = True):
         """The All / News / Facts / Quiz / Ideas chips: one at a time."""
         if key not in CONTENT_FILTER_LABELS:
@@ -4427,6 +4532,7 @@ def run_gui(project_arg: str | None) -> int:
         # Type drives the actions: quizzes answer for points (Next
         # skips either way, like a Short); facts/news skip freely;
         # news opens its link; ideas can be saved for an agent.
+        S["at_end"] = False
         S["game_next"].set_label("Next \u2193")
         S["game_next"].show()
         if ptype == "news" and game.get("link"):
@@ -4499,6 +4605,13 @@ def run_gui(project_arg: str | None) -> int:
                               f"selector -> {pid} [{source}, "
                               f"sim {sim:.2f}]")
             if game is None:
+                if not S.pop("_replay_ok", False) \
+                        and engine.packs_for() \
+                        and not engine.has_unseen():
+                    _render_end_card()
+                    S["content_trail"] = trail
+                    S["content_pos"] = pos
+                    return
                 game = engine.next_game()
             _kick_pick()
             if game is not None:

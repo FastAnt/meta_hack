@@ -563,6 +563,11 @@ class ContentEngine:
         self.filter_types = new
         return True
 
+    def has_unseen(self) -> bool:
+        """Any pack in the current filter not yet served?"""
+        return any(p["id"] not in self._served
+                   for p in self.packs_for())
+
     def matches(self, pack: dict) -> bool:
         return self.filter_types is None or \
             resolve_type(pack) in self.filter_types
