@@ -60,6 +60,23 @@ SAFETY_CRITERIA = [
 ]
 
 
+SCREEN_CRITERIA = {
+    "idle_at_prompt": "The agent's prompt/menu is shown; nothing is running",
+    "thinking": "Spinner/'Working' or reasoning text, no concrete tool running",
+    "searching_system": "Reading/searching local files, listing code",
+    "searching_web": "Web search or fetching pages",
+    "writing_code": "Editing/creating files or generic shell work",
+    "installing": "Installing packages or updating the tool/system (apt, pip install, self-update install)",
+    "downloading": "Downloading files or packages",
+    "compiling": "Compiling or linking code",
+    "running_tests": "Test runner output",
+    "waiting_for_user": "Agent waits for approval or a decision",
+    "asking_question": "The agent asks the user a direct question",
+    "failed": "An error, failure or crash is shown",
+    "finished": "The agent reports the task done",
+}
+
+
 class LiquidClient:
     def __init__(self, api_key: str | None = None, model: str | None = None):
         self.api_key = api_key or os.environ.get("LIQUID_API_KEY", "") \
@@ -70,18 +87,24 @@ class LiquidClient:
     def configured(self) -> bool:
         return bool(self.api_key)
 
-    def decide(self, state: str, questions: dict) -> dict | None:
-        """One System-1 call; returns the `answers` dict or None."""
+    def decide(self, state: str, questions: dict,
+               images: list | None = None) -> dict | None:
+        """One System-1 call; returns the `answers` dict or None.
+        `images` are data URIs (data:image/jpeg;base64,...) the
+        decision models read natively (d1 family: text+image)."""
         if not self.configured:
             return None
         import requests
 
+        payload = {"model": self.model, "state": state,
+                   "questions": questions}
+        if images:
+            payload["images"] = images
         resp = requests.post(
             API_URL,
             headers={"Authorization": f"Bearer {self.api_key}",
                      "Content-Type": "application/json"},
-            json={"model": self.model, "state": state,
-                  "questions": questions},
+            json=payload,
             timeout=25)
         resp.raise_for_status()
         return resp.json().get("answers") or {}
@@ -150,31 +173,57 @@ class LiquidClient:
                         "output is compiling. Test runner output is "
                         "running_tests. A direct question to the user "
                         "at the end is asking_question."),
-                    "criteria": {
-                        "idle_at_prompt": "The agent's prompt/menu is "
-                                          "shown; nothing is running",
-                        "thinking": "Spinner/'Working' or reasoning "
-                                    "text, no concrete tool running",
-                        "searching_system": "Reading/searching local "
-                                            "files, listing code",
-                        "searching_web": "Web search or fetching pages",
-                        "writing_code": "Editing/creating files or "
-                                        "generic shell work",
-                        "installing": "Installing packages or updating "
-                                      "the tool/system (apt, pip "
-                                      "install, self-update install)",
-                        "downloading": "Downloading files or packages",
-                        "compiling": "Compiling or linking code",
-                        "running_tests": "Test runner output",
-                        "waiting_for_user": "Agent waits for approval "
-                                            "or a decision",
-                        "asking_question": "The agent asks the user a "
-                                           "direct question",
-                        "failed": "An error, failure or crash is shown",
-                        "finished": "The agent reports the task done",
-                    },
+                    "criteria": SCREEN_CRITERIA,
                 },
             })
+        if not answers:
+            return None
+        ans = answers.get("screen_kind") or {}
+        choice = ans.get("choice")
+        if choice not in SCREEN_MODES:
+            return None
+        return {"choice": choice,
+                "confidence": float(ans.get("confidence") or 0.0),
+                "mode": SCREEN_MODES[choice]}
+
+    def classify_screen_image(self, image_uri: str,
+                              agent: str = "agent") -> dict | None:
+        """System-1 looks at a screenshot of the agent's
+        terminal and says what the agent is doing. Same verdict
+        shape as classify_screen, but the model sees the actual
+        pixels: spinners, prompt boxes, edited-file lists and
+        progress lines that flat text dumps mangle or lose.
+        Works for any agent UI, known or not."""
+        answers = self.decide(
+            f"Screenshot of the terminal running the {agent} "
+            "coding agent (a TUI). Judge from the IMAGE what "
+            "the agent is doing right now.", {
+                "screen_kind": {
+                    "type": "choice",
+                    "instructions": (
+                        "Judge ONLY from the attached terminal "
+                        "screenshot what the agent is doing right "
+                        "now. An empty input box / prompt with "
+                        "'idle', 'no active goal' or a menu and "
+                        "nothing running is idle_at_prompt. A "
+                        "spinner, elapsed 'Working...' timer or "
+                        "streaming reasoning with no concrete "
+                        "tool output is thinking. Lists of files "
+                        "being read/searched are searching_system; "
+                        "web browsing lines are searching_web. "
+                        "'Edited N files', file diffs or shell "
+                        "commands running are writing_code. "
+                        "Package downloads are downloading/"
+                        "installing; compiler output compiling; "
+                        "test output running_tests. A question or "
+                        "approval request addressed to the user "
+                        "at the bottom is asking_question / "
+                        "waiting_for_user. A visible error or "
+                        "crash is failed; a final summary "
+                        "reporting completion is finished."),
+                    "criteria": SCREEN_CRITERIA,
+                },
+            }, images=[image_uri])
         if not answers:
             return None
         ans = answers.get("screen_kind") or {}

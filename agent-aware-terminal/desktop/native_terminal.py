@@ -636,7 +636,8 @@ class Core:
         return st.get("source") == "agent_event" and \
             st.get("state") in BUSY_STATES
 
-    def classify_tick(self, agent: dict, screen: str = ""):
+    def classify_tick(self, agent: dict, screen: str = "",
+                      image: str = ""):
         """When the event stream only says generic "working" (no tool),
         ask Liquid d1.1 what the agent is actually doing. Facts from the
         log always win; this only fills the ambiguous gaps, throttled
@@ -677,8 +678,20 @@ class Core:
                     self.dlog("system1", f"reading screen "
                                          f"({len(screen)} chars)")
                 try:
-                    out = self.liquid.classify_screen(
-                        screen, agent.get("agent") or "agent")
+                    # The screenshot is the primary sensor: the
+                    # model sees the agent's actual UI (spinner,
+                    # prompt box, edited files) instead of a
+                    # mangled text dump. Text stays as fallback
+                    # when vision returns nothing.
+                    out = None
+                    if image:
+                        out = self.liquid.classify_screen_image(
+                            image, agent.get("agent") or "agent")
+                        if out:
+                            out = {**out, "via": "image"}
+                    if not out:
+                        out = self.liquid.classify_screen(
+                            screen, agent.get("agent") or "agent")
                     if out:
                         self.liquid_stats["screen_ok"] += 1
                         self.liquid_stats["last_choice"] = out["choice"]
@@ -686,7 +699,8 @@ class Core:
                         self.dlog("system1",
                                   f"screen -> {out['choice']} "
                                   f"({out['confidence']:.2f}), "
-                                  f"mode={out['mode']}")
+                                  f"mode={out['mode']}"
+                                  f"{' [image]' if out.get('via') else ''}")
                         self._screen_turn_tick(
                             agent.get("agent"), out["choice"],
                             out["confidence"])
@@ -1021,23 +1035,34 @@ class Core:
                     vanish["agent"], "completed",
                     getattr(self, "_last_turn_secs", 0))
             elif age > 6 and last == "idle_at_prompt":
-                self._interrupt_until = time.time() + 5
-                self._interrupt_agent = vanish["agent"]
+                # The process is gone and the screen rests at a
+                # prompt: the turn ended. Calling that an
+                # interruption was wrong — failure needs
+                # evidence; the scorer judges how complete the
+                # work actually was.
+                self._last_outcome = {
+                    "key": vanish.get("key"),
+                    "agent": vanish["agent"], "mode": "done"}
                 self._vanish = None
-                self.dlog("mode", "agent vanished mid-turn -> "
-                                  f"interrupted ({vanish['agent']})")
+                self.dlog("mode", "vanished agent ended -> sticky "
+                                  f"done ({vanish['agent']}, "
+                                  "prompt at rest)")
                 self._finish_observed_turn(
-                    vanish["agent"], "interrupted",
+                    vanish["agent"], "completed",
                     getattr(self, "_last_turn_secs", 0))
             elif age > 14:
-                self._interrupt_until = time.time() + 5
-                self._interrupt_agent = vanish["agent"]
+                # Gone with no failure evidence: ended. (Real
+                # interruptions arrive via ^C evidence on the
+                # process path, not via disappearance.)
+                self._last_outcome = {
+                    "key": vanish.get("key"),
+                    "agent": vanish["agent"], "mode": "done"}
                 self._vanish = None
-                self.dlog("mode", "agent vanished mid-turn -> "
-                                  "interrupted "
+                self.dlog("mode", "vanished agent ended -> sticky "
+                                  "done "
                                   f"({vanish['agent']}, unresolved)")
                 self._finish_observed_turn(
-                    vanish["agent"], "interrupted",
+                    vanish["agent"], "completed",
                     getattr(self, "_last_turn_secs", 0))
 
         if not cur_agent and time.time() < getattr(
@@ -1592,6 +1617,22 @@ def project_substance(profile: dict) -> tuple:
 
 _s = lambda s, n=60: " ".join(str(s).split())[:n]
 
+import re as _re_mod
+_AGENTISH_RE = _re_mod.compile(
+    r"(prime|codex|claude|muse|kilo|aider|gemini|qwen|copilot"
+    r"|opencode|crush|goose|amp|droid)", _re_mod.I)
+
+
+def agentish_name(foreground: dict) -> str:
+    """A foreground program that is (almost certainly) a coding
+    agent TUI we have no adapter for — prime agent and friends.
+    Such programs get the full screen treatment (their terminal
+    screenshot is understood by System-1), which is how the app
+    visualizes agents it has never seen code for."""
+    text = f"{foreground.get('process', '')} {foreground.get('cmdline', '')}"
+    m = _AGENTISH_RE.search(text)
+    return m.group(1).lower() if m else ""
+
 
 
 
@@ -1758,6 +1799,36 @@ def ensure_inter_font():
 
 
 MOCK = os.environ.get("AAT_MOCKSTATE", "")
+
+
+def _render_screen_image(text: str) -> str:
+    """Render terminal text to a PNG data URI: the screenshot
+    System-1 reads when the real widget is not on screen (the
+    content pane covers it) or pixbuf capture fails."""
+    try:
+        import base64 as _b64
+        import cairo as _cairo
+        lines = [ln for ln in text.splitlines()][-40:]
+        W, H = 1120, 24 + 18 * max(1, len(lines))
+        surf = _cairo.ImageSurface(_cairo.FORMAT_RGB24, W, H)
+        cr = _cairo.Context(surf)
+        cr.set_source_rgb(0.05, 0.05, 0.06)
+        cr.paint()
+        cr.set_source_rgb(0.91, 0.91, 0.92)
+        cr.select_font_face("Monospace")
+        cr.set_font_size(13.5)
+        y = 26
+        for ln in lines:
+            cr.move_to(10, y)
+            cr.show_text(ln[:118])
+            y += 18
+        import io as _io
+        buf = _io.BytesIO()
+        surf.write_to_png(buf)
+        return ("data:image/png;base64,"
+                + _b64.b64encode(buf.getvalue()).decode())
+    except Exception:
+        return ""
 
 
 def run_gui(project_arg: str | None) -> int:
@@ -3567,6 +3638,12 @@ def run_gui(project_arg: str | None) -> int:
 
         for row_w in (S["set_model_row"], S["set_llm_box"],
                       S["set_custom_row"], S["set_sandbox_row"]):
+            # Children start hidden; show them once now that the
+            # row is parented, then no_show_all keeps the
+            # window's show_all from resurrecting rows the
+            # refresh logic hides. (Without this the refresh
+            # toggled an empty shell: no Model row ever drew.)
+            row_w.show_all()
             row_w.set_no_show_all(True)
         S["set_provider"].set_active_id(
             S["creator_cfg"]["provider"])
@@ -5098,7 +5175,52 @@ def run_gui(project_arg: str | None) -> int:
                     # agent's name so its ending can be resolved.
                     ca = {"agent": core._vanish["agent"],
                           "state": "idle", "source": "heuristic"}
-                core.classify_tick(ca, scr)
+                elif not ca.get("agent"):
+                    # An agent TUI we have no adapter for (prime
+                    # agent, kilo, ...) still gets understood —
+                    # from its screenshot, under its own name.
+                    nm = agentish_name(
+                        (core.snapshot or {}).get("foreground")
+                        or {})
+                    if nm:
+                        ca = {"agent": nm, "state": "idle",
+                              "source": "heuristic"}
+                img = ""
+                if ca.get("agent") and \
+                        time.time() - S.get("_img_at", 0) >= 4:
+                    S["_img_at"] = time.time()
+                    img = S.get("_img_uri", "")
+                    try:
+                        visible = S["left_stack"] \
+                            .get_visible_child_name() == "terminal"
+                        pb = None
+                        if visible:
+                            win = S["vte"].get_window()
+                            al = S["vte"].get_allocation()
+                            if win is not None and al.width > 10:
+                                pb = Gdk.pixbuf_get_from_window(
+                                    win, 0, 0, al.width, al.height)
+                        if pb is not None:
+                            wd = pb.get_width()
+                            if wd > 1100:
+                                pb = pb.scale_simple(
+                                    1100,
+                                    max(1, pb.get_height()
+                                        * 1100 // wd),
+                                    GdkPixbuf.InterpType.BILINEAR)
+                            ok, buf = pb.save_to_bufferv(
+                                "jpeg", ["quality"], ["72"])
+                            if ok:
+                                import base64 as _b64
+                                img = ("data:image/jpeg;base64,"
+                                       + _b64.b64encode(
+                                           bytes(buf)).decode())
+                    except Exception:
+                        pass
+                    if not img:
+                        img = _render_screen_image(scr)
+                    S["_img_uri"] = img
+                core.classify_tick(ca, scr, image=img)
             except Exception as exc:  # the square must never freeze
                 if S.get("_scr_err") != str(exc):
                     S["_scr_err"] = str(exc)

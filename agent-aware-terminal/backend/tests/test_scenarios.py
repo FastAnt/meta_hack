@@ -246,7 +246,7 @@ class CoreScenarioTests(unittest.TestCase):
         self.assertEqual(
             self.native.mode_for_agent(self.core.agent_state), "done")
 
-    def test_codex_vanishing_mid_turn_is_interrupted(self):
+    def test_codex_vanishing_mid_turn_is_an_ending(self):
         codex = {"pid": 10, "ppid": 1, "comm": "codex",
                  "cmdline": "codex --yolo"}
         child = {"pid": 11, "ppid": 10, "comm": "make",
@@ -266,9 +266,9 @@ class CoreScenarioTests(unittest.TestCase):
         self.assertFalse(self.core.agent_state.get("interrupted"))
         self.core._vanish["at"] = time.time() - 20
         self.core.refresh_agent_state()
-        self.assertTrue(self.core.agent_state.get("interrupted"))
-        self.assertEqual(
-            self.native.mode_for_agent(self.core.agent_state), "fail")
+        # No failure evidence: the ending is not an interruption.
+        self.assertFalse(self.core.agent_state.get("interrupted"))
+        self.assertEqual(self.core._last_outcome["mode"], "done")
 
     def test_quick_phantom_completion_is_not_scored(self):
         self.core._on_agent_event({"state": "working",
@@ -473,22 +473,22 @@ class VanishResolutionTests(CoreScenarioTests):
         self.assertEqual(
             self.native.mode_for_agent(self.core.agent_state), "done")
 
-    def test_bare_prompt_resolves_to_interrupted(self):
+    def test_bare_prompt_resolves_to_done(self):
         self._drive_vanish()
         self.core._screen_turn_tick("codex", "thinking", 0.9)
         self.core._screen_turn_since = time.time() - 30
         self.core._screen_turn_tick("codex", "idle_at_prompt", 0.8)
         self.core._vanish["at"] = time.time() - 7
         self.core.refresh_agent_state()
-        self.assertTrue(self.core.agent_state.get("interrupted"))
-        self.assertEqual(
-            self.native.mode_for_agent(self.core.agent_state), "fail")
+        self.assertFalse(self.core.agent_state.get("interrupted"))
+        self.assertEqual(self.core._last_outcome["mode"], "done")
 
-    def test_unresolved_vanish_times_out_to_interrupted(self):
+    def test_unresolved_vanish_times_out_to_done(self):
         self._drive_vanish()
         self.core._vanish["at"] = time.time() - 20
         self.core.refresh_agent_state()
-        self.assertTrue(self.core.agent_state.get("interrupted"))
+        self.assertFalse(self.core.agent_state.get("interrupted"))
+        self.assertEqual(self.core._last_outcome["mode"], "done")
 
     def test_observed_turn_gets_session_results(self):
         import pathlib as _pl
