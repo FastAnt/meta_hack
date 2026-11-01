@@ -2664,7 +2664,12 @@ def run_gui(project_arg: str | None) -> int:
                 def _tour_tick():
                     if S["left_stack"].get_visible_child_name() \
                             == "content":
-                        serve_game(True)
+                        cur = S["game_ctl"].get("game") or {}
+                        # Facts, news and ideas are reading
+                        # content: they change only when the
+                        # user presses Next, never on the clock.
+                        if cur.get("type", "game") == "game":
+                            serve_game(True)
                     return True
                 GLib.timeout_add_seconds(_tour_secs, _tour_tick)
             core.dlog("ui", "game tour on ("
