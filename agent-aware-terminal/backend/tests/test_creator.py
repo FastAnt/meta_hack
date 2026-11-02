@@ -149,6 +149,22 @@ class KiloProviderTests(unittest.TestCase):
                  "AAT_CREATOR_MODEL": "anthropic/claude-x"}),
             ["kilo", "run", "-m", "anthropic/claude-x"])
 
+    def test_missing_provider_binary_falls_back(self):
+        # Regression: persisted provider "kilo" on a machine
+        # without the kilo CLI failed every spawn (Errno 2)
+        # and no content was ever created.
+        import shutil
+        if shutil.which("kilo"):
+            self.skipTest("kilo is installed here")
+        if not (shutil.which("muse") or shutil.which("codex")):
+            self.skipTest("no fallback creator on PATH")
+        cmd, note = _native().available_creator_command(
+            {"AAT_CREATOR_PROVIDER": "kilo",
+             "AAT_CREATOR_MODEL": "anthropic/claude-x"})
+        self.assertIn(cmd[0], ("muse", "codex"))
+        self.assertNotIn("anthropic/claude-x", cmd)
+        self.assertIn("kilo not installed", note)
+
     def test_llm_is_not_an_argv_provider(self):
         with self.assertRaises(ValueError):
             _native().creator_command(

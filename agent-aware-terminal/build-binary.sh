@@ -5,10 +5,19 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# The build venv must come from a Python that can import gi
+# (a conda/micromamba python3 first in PATH cannot — same trap
+# as run.sh). A stale venv built by such a Python is rebuilt.
+SYS_PY="/usr/bin/python3"
+"$SYS_PY" -c "import gi" >/dev/null 2>&1 || SYS_PY="python3"
+if [ -d .venv-build ] && ! .venv-build/bin/python -c "import gi" >/dev/null 2>&1; then
+  echo "build-binary.sh: .venv-build has no gi (built by the wrong Python) — recreating"
+  rm -rf .venv-build
+fi
 if [ ! -d .venv-build ]; then
   # --system-site-packages: PyGObject (Gtk/Vte typelibs) is a system
   # package on Ubuntu and is what the native window is built on.
-  python3 -m venv --system-site-packages .venv-build
+  "$SYS_PY" -m venv --system-site-packages .venv-build
   .venv-build/bin/pip install -q pyinstaller requests pycairo
 fi
 # Local embedding runtime (optional at runtime: hashing fallback
@@ -33,6 +42,7 @@ fi
   --hidden-import backend.app.embeddings \
   --hidden-import backend.app.vector_store \
   --hidden-import backend.app.content_selector \
+  --hidden-import backend.app.screen_perception \
   --collect-all onnxruntime \
   --hidden-import tokenizers \
   --collect-all tokenizers \

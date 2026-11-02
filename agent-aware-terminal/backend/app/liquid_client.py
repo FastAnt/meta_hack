@@ -234,6 +234,86 @@ class LiquidClient:
                 "confidence": float(ans.get("confidence") or 0.0),
                 "mode": SCREEN_MODES[choice]}
 
+    def perceive_screen(self, screen: str, agent: str = "agent",
+                        image: str | None = None,
+                        context: str = "") -> dict | None:
+        """Unified perception of a terminal agent, one call.
+
+        The same method serves every agent (Muse, Codex, ...):
+        System-1 sees the screenshot (primary) and the screen
+        text, plus code-measured dynamics in `context` (seconds
+        since the screen changed, process CPU, previous
+        verdicts). It answers four bounded questions at once:
+        what activity, is it working, does it need the user, is
+        it finished. Returns a Verdict-shaped dict or None."""
+        state = (f"Terminal of the {agent} coding agent (a TUI). "
+                 + (f"Measured context: {context}\n" if context else "")
+                 + f"Most recent screen text at the bottom:\n\n"
+                   f"{(screen or '')[-1800:]}")
+        answers = self.decide(state, {
+            "screen_kind": {
+                "type": "choice",
+                "instructions": (
+                    "Judge ONLY from the screenshot and terminal "
+                    "text what the agent is doing right now. An "
+                    "empty input box / prompt with nothing running "
+                    "is idle_at_prompt. A spinner, elapsed "
+                    "'Working...' timer or streaming reasoning "
+                    "with no concrete tool output is thinking — "
+                    "it is actively working, never waiting for "
+                    "the user, even if shortcut hints are shown. "
+                    "Files read/searched are searching_system; "
+                    "web lines searching_web; edits, diffs and "
+                    "shell work writing_code; downloads/"
+                    "installers downloading/installing; compiler "
+                    "compiling; tests running_tests. A question "
+                    "or approval addressed to the user is "
+                    "asking_question / waiting_for_user. An "
+                    "error is failed; a final summary reporting "
+                    "completion is finished."),
+                "criteria": SCREEN_CRITERIA,
+            },
+            "is_working": {
+                "type": "noul",
+                "instructions": (
+                    "Is the agent actively working on a task "
+                    "right now (thinking, using tools, waiting "
+                    "on a command or the network mid-task), as "
+                    "opposed to sitting idle at its prompt?"),
+            },
+            "needs_user": {
+                "type": "noul",
+                "instructions": (
+                    "Is the agent blocked waiting for the user "
+                    "to answer, approve or decide something "
+                    "before it can continue?"),
+            },
+            "is_finished": {
+                "type": "noul",
+                "instructions": (
+                    "Has the agent completed its current task "
+                    "and reported the result, so the turn is "
+                    "over?"),
+            },
+        }, images=[image] if image else None)
+        if not answers:
+            return None
+
+        def _noul(name):
+            val = (answers.get(name) or {}).get("noul")
+            return float(val) if val is not None else None
+
+        ans = answers.get("screen_kind") or {}
+        choice = ans.get("choice")
+        if choice not in SCREEN_MODES:
+            return None
+        return {"choice": choice,
+                "confidence": float(ans.get("confidence") or 0.0),
+                "mode": SCREEN_MODES[choice],
+                "is_working": _noul("is_working"),
+                "needs_user": _noul("needs_user"),
+                "is_finished": _noul("is_finished")}
+
     def pick_best(self, context: str, candidates: list) -> tuple | None:
         """System-1 chooses the single best content item to show
         from a retrieved shortlist. Candidates are pack dicts.

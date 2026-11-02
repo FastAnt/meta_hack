@@ -64,6 +64,34 @@ class LiquidClientTests(unittest.TestCase):
         self.assertEqual(out["completion"]["score"], 3.4)
         self.assertEqual(out["safety"]["score"], 2.1)
 
+    def test_perceive_screen_reads_all_questions(self):
+        seen = {}
+
+        def fake_post(url, headers=None, json=None, timeout=None):
+            seen.update(json)
+            return FakeResponse({"answers": {
+                "screen_kind": {"type": "choice",
+                                "choice": "thinking",
+                                "confidence": 0.55},
+                "is_working": {"type": "noul", "noul": 0.93},
+                "needs_user": {"type": "noul", "noul": 0.02},
+                "is_finished": {"type": "noul", "noul": 0.01}}})
+
+        requests.post = fake_post
+        out = LiquidClient(api_key="liquid_test").perceive_screen(
+            "Working (12s)", "codex",
+            image="data:image/jpeg;base64,AA",
+            context="screen unchanged for 30s")
+        self.assertEqual(out["choice"], "thinking")
+        self.assertEqual(out["mode"], "flash")
+        self.assertAlmostEqual(out["is_working"], 0.93)
+        self.assertAlmostEqual(out["needs_user"], 0.02)
+        self.assertEqual(seen["images"],
+                         ["data:image/jpeg;base64,AA"])
+        self.assertEqual(seen["questions"]["is_working"]["type"],
+                         "noul")
+        self.assertIn("screen unchanged for 30s", seen["state"])
+
     def test_unconfigured_client_returns_none(self):
         client = LiquidClient(api_key="")
         self.assertIsNone(client.predict_long_task("s"))

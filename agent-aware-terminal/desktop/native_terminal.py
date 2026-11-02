@@ -181,6 +181,22 @@ def session_diff(root: str, baseline: dict) -> list:
 # Core: backend logic without any HTTP layer
 # ---------------------------------------------------------------------------
 
+class _NullAdapter:
+    """Stand-in used in unified screen-perception mode: agent
+    state comes from the terminal screen for every agent alike,
+    so no per-agent log parser runs at all."""
+    current_file = None
+
+    def __init__(self):
+        self.state: dict = {}
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+
 class Core:
     def __init__(self, project_path: str):
         from backend.app.content import CardStore, deterministic_cards
@@ -252,7 +268,27 @@ class Core:
         self._busy_since: float | None = None
         self._lock = threading.Lock()
 
-        self.adapter = MuseAdapter(self._on_agent_event, self._get_cwd)
+        # Unified perception: with System-1 configured, every
+        # agent (Muse included) is understood from the terminal
+        # screen through one state machine — the app is an agent
+        # over the terminal, not a parser per agent. The Muse
+        # log adapter only runs in legacy mode (no Liquid key,
+        # or AAT_PERCEPTION=legacy).
+        from backend.app.screen_perception import ScreenPerception
+        mode = os.environ.get("AAT_PERCEPTION", "system1").lower()
+        self.perception = ScreenPerception() \
+            if mode != "legacy" and self.liquid.configured else None
+        self._perc_history: deque = deque(maxlen=3)
+        if self.perception is not None:
+            self.dlog("boot", "perception: unified System-1 screen "
+                              "(all agents, no log adapters)")
+            self.adapter = _NullAdapter()
+        else:
+            if mode != "legacy":
+                self.dlog("boot", "perception: legacy heuristics "
+                                  "(no Liquid key)")
+            self.adapter = MuseAdapter(self._on_agent_event,
+                                         self._get_cwd)
         self.adapter.start()
         self.reindex(project_path)
         self._load_enriched_cache()
@@ -815,11 +851,94 @@ class Core:
         screen-driven turn, or adapter-reported work."""
         if getattr(self, "_screen_turn_active", False):
             return True
+        p = getattr(self, "perception", None)
+        if p is not None and p.state in ("working", "waiting"):
+            return True
         if getattr(self, "_busy_started_at", None):
             return True
         st = self.agent_state or {}
         return st.get("source") == "agent_event" and \
             st.get("state") in BUSY_STATES
+
+    def _perceive_tick(self, agent, screen, image=""):
+        """Unified perception call: same for every agent."""
+        from backend.app.screen_perception import Verdict
+        p = self.perception
+        agent_name = agent.get("agent")
+        p.set_agent(agent_name)
+        now = time.time()
+        h = hash((screen or "")[-1500:])
+        if h != getattr(self, "_perc_hash", None):
+            self._perc_hash = h
+            self._perc_changed_at = now
+        quiet_s = int(now - getattr(self, "_perc_changed_at", now))
+        due = self._classify_due(now, screen)
+        if not due and p.state in ("working", "waiting") \
+                and now - getattr(self, "_screen_at", 0) >= 8:
+            # A turn's final screen is static: the change-driven
+            # cadence would go silent exactly when the machine
+            # still needs a confirming look to close the turn.
+            due = True
+        if self._classifying or not due:
+            return
+        self._screen_at = now
+        self._classifying = True
+        if callable(image):
+            try:
+                image = image()
+            except Exception:
+                image = ""
+        prev = ", ".join(
+            f"{c} ({cf:.2f})" for c, cf in
+            getattr(self, "_perc_history", [])) or "none"
+        turn_s = int(now - p.turn_started_at) \
+            if p.turn_started_at else 0
+        context = (f"screen text unchanged for {quiet_s}s; "
+                   f"perceived state {p.state}"
+                   + (f", turn open for {turn_s}s" if turn_s else "")
+                   + f"; previous verdicts: {prev}")
+
+        def _ask():
+            try:
+                self.liquid_stats["screen_calls"] += 1
+                out = self.liquid.perceive_screen(
+                    screen, agent_name or "agent",
+                    image=image or None, context=context)
+                if not out:
+                    # Fallback within unified mode only if the new
+                    # multi-question call fails: still screen-based.
+                    out = self.liquid.classify_screen(
+                        screen, agent_name or "agent")
+                if out:
+                    self.liquid_stats["screen_ok"] += 1
+                    self.liquid_stats["last_choice"] = out["choice"]
+                    self.liquid_stats["last_conf"] = \
+                        out["confidence"]
+                    self._perc_history.append(
+                        (out["choice"], out["confidence"]))
+                    probs = " ".join(
+                        f"{k}={out[k]:.2f}" for k in
+                        ("is_working", "needs_user", "is_finished")
+                        if out.get(k) is not None)
+                    self.dlog("system1",
+                              f"perceive -> {out['choice']} "
+                              f"({out['confidence']:.2f})"
+                              f"{' ' + probs if probs else ''}")
+                    ev = p.update(Verdict(
+                        choice=out["choice"],
+                        confidence=out["confidence"],
+                        is_working=out.get("is_working"),
+                        needs_user=out.get("needs_user"),
+                        is_finished=out.get("is_finished")))
+                    self._apply_perception_event(ev, agent_name)
+                    self._last_screen_choice = out["choice"]
+                    self._last_screen_choice_at = time.time()
+            except Exception as exc:
+                self.liquid_stats["screen_err"] += 1
+                self.dlog("system1", f"perceive error: {exc}")
+            finally:
+                self._classifying = False
+        threading.Thread(target=_ask, daemon=True).start()
 
     def classify_tick(self, agent: dict, screen: str = "",
                       image: str = ""):
@@ -840,6 +959,10 @@ class Core:
             return
         if screen:
             self._screen_tail = screen[-1500:]
+        if getattr(self, "perception", None) is not None \
+                and screen and agent.get("agent"):
+            self._perceive_tick(agent, screen, image)
+            return
         if screen and agent.get("agent") \
                 and agent.get("source") != "agent_event":
             self._screen_quiet_tick(agent.get("agent"), screen)
@@ -1063,6 +1186,87 @@ class Core:
         except Exception:
             pass
 
+    # -- unified screen perception (all agents) -------------------
+    def _apply_perception_event(self, ev, agent_name):
+        if not ev:
+            return
+        if ev["kind"] == "turn_started":
+            self.clear_outcome("new turn")
+            self._finalized_at = 0.0
+            self._screen_turn_active = True
+            self._start_baseline()
+            self.dlog("mode", f"turn opened ({agent_name}, "
+                              f"#{ev['turn_id']})")
+        elif ev["kind"] in ("turn_finished", "turn_failed"):
+            failed = ev["kind"] == "turn_failed"
+            self._screen_turn_active = False
+            self._last_outcome = {
+                "key": getattr(self, "_agent_key_now", None),
+                "agent": agent_name,
+                "mode": "fail" if failed else "done"}
+            self.dlog("mode", f"turn {'failed' if failed else 'ended'} "
+                              f"({agent_name}, {ev['secs']}s)")
+            self._finish_observed_turn(
+                agent_name, "failed" if failed else "completed",
+                ev["secs"])
+
+    def _perception_state_dict(self, cli, snap):
+        p = self.perception
+        fg = (snap.get("foreground") or {}).get("cmdline", "")
+        base = {"agent": cli, "activity": fg[:110], "command": fg,
+                "source": "system1-screen",
+                "screen_choice": p.mode_choice,
+                "confidence": getattr(p.last_verdict, "confidence",
+                                      None),
+                "files": [], "plan": []}
+        if p.state == "working":
+            base["state"] = "working"
+        elif p.state == "waiting":
+            base["state"] = "awaiting_user"
+            base["needs"] = "answer" \
+                if p.mode_choice == "asking_question" else "approval"
+        elif p.state == "finished":
+            base.update(state="idle", sticky_outcome="done",
+                        turn_done=True)
+        elif p.state == "failed":
+            base.update(state="idle", sticky_outcome="fail")
+        else:
+            base["state"] = "idle"
+        return base
+
+    def _refresh_unified(self, cli, snap):
+        p = self.perception
+        if not cli:
+            ev = p.note_agent_gone()
+            self._apply_perception_event(ev, p.agent)
+            if p.agent:
+                p.set_agent(None)
+            oc = self._last_outcome
+            if oc:
+                self.agent_state = {
+                    "agent": oc.get("agent"), "state": "idle",
+                    "sticky_outcome": oc["mode"],
+                    "turn_done": oc["mode"] == "done",
+                    "source": "system1-screen",
+                    "files": [], "plan": []}
+            else:
+                self.agent_state = {"agent": None, "state": "idle",
+                                    "source": "heuristic",
+                                    "files": [], "plan": []}
+        else:
+            ev = p.set_agent(cli)
+            self._apply_perception_event(ev, cli)
+            self._agent_key_now = \
+                f"{cli}:{(snap or {}).get('agent_pid') or ''}"
+            self.agent_state = self._perception_state_dict(cli, snap)
+        sig = (self.agent_state.get("agent"),
+               self.agent_state.get("state"),
+               self.agent_state.get("source"))
+        if sig != self._prev_sig:
+            self._prev_sig = sig
+            self.dlog("state", f"{sig[0] or 'no-agent'} · {sig[1]} "
+                               f"(source={sig[2]})")
+
     def refresh_agent_state(self):
         """Adapter facts win; observer heuristics are the fallback."""
         if self.sim_feed is not None and self.sim_feed.state:
@@ -1072,6 +1276,10 @@ class Core:
         inferred = snap.get("inferred") or {}
         fg_cmd = (snap.get("foreground") or {}).get("cmdline", "")
         cli = snap.get("agent_cli_detected")
+        if getattr(self, "perception", None) is not None and (
+                cli or self.perception.agent):
+            self._refresh_unified(cli, snap)
+            return
         # Is an adapter-less agent actually working right now?
         obs_busy = False
         if cli:
@@ -1842,6 +2050,30 @@ def creator_command(env=None) -> list:
     raise ValueError(f"unknown AAT_CREATOR_PROVIDER: {provider!r}")
 
 
+def available_creator_command(env=None) -> tuple:
+    """creator_command, but the binary must exist: a saved
+    provider whose CLI is not installed (the classic: provider
+    'kilo' persisted in creator_settings.json, no kilo on the
+    machine) used to fail every spawn with Errno 2 and no
+    content ever got created. Fall back to an installed
+    creator instead; the configured model is dropped (ids are
+    provider-specific). Returns (argv, fallback_note|\"\")."""
+    cmd = creator_command(env)
+    if shutil.which(cmd[0]):
+        return cmd, ""
+    for alt in ("muse", "codex"):
+        if alt != cmd[0] and shutil.which(alt):
+            env2 = dict(os.environ if env is None else env)
+            env2["AAT_CREATOR_PROVIDER"] = alt
+            env2.pop("AAT_CREATOR_MODEL", None)
+            env2.pop("AAT_CREATOR_CMD", None)
+            return creator_command(env2), \
+                f"{cmd[0]} not installed; using {alt}"
+    raise FileNotFoundError(
+        f"creator {cmd[0]!r} is not installed and no fallback "
+        "creator (muse/codex) was found on PATH")
+
+
 def creator_failure_reason(lines) -> str:
     """One honest line for a dead creator run: its own last
     error (quota, auth, sandbox) beats 'no content'."""
@@ -1899,6 +2131,15 @@ def mode_for_agent(agent: dict) -> str:
         so = agent.get("sticky_outcome")
         if so in ("done", "fail"):
             return so
+    choice = agent.get("screen_choice")
+    if choice and st in ("working", "tool_running", "planning"):
+        # Unified screen perception chose the activity: it maps
+        # straight to an animation for every agent alike.
+        return {"thinking": "flash", "searching_system": "glitch",
+                "searching_web": "trail", "writing_code": "build",
+                "installing": "install", "downloading": "download",
+                "compiling": "compile", "running_tests": "test",
+                }.get(choice, "build")
     lf = agent.get("last_failure")
     if lf and st in ("working", "tool_running"):
         at = lf.get("at")
@@ -2358,11 +2599,13 @@ def run_gui(project_arg: str | None) -> int:
             return _spawn_llm_creator(want_type, root, reason,
                                       prompt)
         try:
-            cmd = creator_command(env)
-        except ValueError as exc:
+            cmd, fb_note = available_creator_command(env)
+        except (ValueError, FileNotFoundError) as exc:
             core.dlog("content", f"creator misconfigured: {exc}")
             _set_content_note(f"Creator misconfigured: {exc}")
             return False
+        if fb_note:
+            core.dlog("content", f"creator fallback: {fb_note}")
         rdir = Path(root) / ".aat" / "research"
         try:
             rdir.mkdir(parents=True, exist_ok=True)
@@ -3782,7 +4025,20 @@ def run_gui(project_arg: str | None) -> int:
             combo = S["set_model"]
             combo.remove_all()
             combo.append_text("")
-            if prov == "codex":
+            combo.get_child().set_placeholder_text(
+                "empty = agent default")
+            if prov == "muse":
+                try:
+                    import json as _mj
+                    cfg = _mj.loads(
+                        (Path.home() / ".config" / "muse"
+                         / "settings.json").read_text(
+                             encoding="utf-8"))
+                    if cfg.get("model"):
+                        combo.append_text(str(cfg["model"]))
+                except Exception:
+                    pass
+            elif prov == "codex":
                 try:
                     import re as _re2
                     txt = (Path.home() / ".codex"
@@ -3795,6 +4051,12 @@ def run_gui(project_arg: str | None) -> int:
                 except Exception:
                     pass
             elif prov == "kilo":
+                if not shutil.which("kilo"):
+                    # Say so in the field instead of silently
+                    # offering an empty list forever; spawning
+                    # falls back to an installed creator.
+                    combo.get_child().set_placeholder_text(
+                        "kilo CLI not installed")
                 cached = S.get("_kilo_models")
                 if cached is None:
                     S["_kilo_models"] = []

@@ -245,7 +245,25 @@ and project-imagery experiments in the backend. They are not
 part of the current UI (principle 1/2); keep them working but
 do not surface generated imagery in the pane.
 
-## Perception: two layers, one truth
+## Perception: unified screen perception (default with a Liquid key)
+
+One mechanism for every agent, Muse included: the app is an
+agent over the terminal, not a parser per agent. With System-1
+configured (`AAT_PERCEPTION=system1`, the default),
+`LiquidClient.perceive_screen` answers four bounded questions
+per snapshot (activity choice + `is_working` / `needs_user` /
+`is_finished` nouls) over the screenshot, screen text and
+code-measured dynamics (screen-quiet seconds, previous
+verdicts); `backend/app/screen_perception.py` smooths that
+stream into turn state with hysteresis (work opens a turn, two
+confirmed rest verdicts close it, a vanished process closes
+it deterministically). The Muse session-log adapter does not
+run in this mode at all. Files remain baseline-diff truth and
+scores remain System-1 judgments over measured facts. Without
+a Liquid key (or `AAT_PERCEPTION=legacy`) the older layered
+perception below is the fallback.
+
+## Perception (legacy fallback): two layers, one truth
 
 State comes from a deterministic skeleton only: an agent
 counts when it lives in this terminal's process tree (or its
