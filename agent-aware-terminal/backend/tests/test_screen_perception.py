@@ -93,6 +93,23 @@ class PerceptionTests(unittest.TestCase):
         self.assertEqual(ev["kind"], "turn_finished")
         self.assertIsNone(self.p.note_agent_gone(now=self.t + 6))
 
+    def test_agent_identity_flicker_does_not_close_young_turn(self):
+        # Live incident (prime, 23:44): the detected agent name /
+        # presence flickered between snapshots while the agent
+        # worked on with 7 subagents, and every flicker closed
+        # the turn at 0 s and armed a fake DONE. An identity
+        # change inside the grace window is detection noise, not
+        # an ending.
+        self.p.set_agent("prime", now=self.t)
+        self.work()  # turn opens on the first strong verdict
+        self.assertIsNone(self.p.set_agent("codex", now=self.t - 2))
+        self.assertEqual(self.p.state, "working")
+        self.assertEqual(self.p.agent, "prime")
+        # A change that persists past the grace is real.
+        ev = self.p.set_agent("codex", now=self.t + 10)
+        self.assertEqual(ev["kind"], "turn_finished")
+        self.assertEqual(self.p.agent, "codex")
+
     def test_idle_prompt_needs_user_is_not_waiting(self):
         # Live incident: an empty prompt scored needs_user=0.8
         # (it does need the next task) and opened a fake
@@ -147,6 +164,24 @@ class UnifiedRefreshTests(unittest.TestCase):
         core._last_outcome = None
         core.mod = mod
         return core
+
+    def test_missing_agent_snapshot_does_not_close_young_turn(self):
+        # One snapshot with no detected agent (a scan flicker)
+        # must not close a turn that just opened: the DONE on
+        # screen at 23:44 was armed exactly that way, repeatedly,
+        # while the agent's own status bar showed subagents
+        # still running.
+        import time as _time
+        core = self._core()
+        core.perception.set_agent("prime")
+        core.perception.update(Verdict("thinking", 0.9),
+                               now=_time.time())
+        snap = {"foreground": {"cmdline": "prime"}, "agent_pid": 7}
+        core._refresh_unified("prime", snap)
+        self.assertEqual(core.agent_state["state"], "working")
+        core._refresh_unified(None, snap)
+        self.assertEqual(core.perception.state, "working")
+        self.assertEqual(core.agent_state["state"], "working")
 
     def test_muse_and_codex_share_the_perception_path(self):
         for cli in ("muse", "codex"):

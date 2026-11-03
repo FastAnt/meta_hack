@@ -30,6 +30,7 @@ import json
 import os
 import pathlib
 import random
+import re
 from pathlib import Path
 
 KINDS = ("quiz", "card")
@@ -44,6 +45,122 @@ def resolve_type(raw) -> str:
     if t:
         return t
     return "game" if raw.get("kind", "quiz") == "quiz" else "fact"
+
+
+CARD_VISUAL_KINDS = ("sections", "convert", "music", "blueprint",
+                     "release", "news_text")
+
+_STOPWORDS = {"the", "a", "an", "and", "or", "of", "to", "in",
+              "for", "with", "from", "into", "that", "this", "now",
+              "new", "one", "can", "puts", "what", "why", "how"}
+
+
+def _visual_text(pack: dict) -> str:
+    return " ".join(str(pack.get(k) or "") for k in
+                    ("title", "body", "topic", "action_hint")).lower()
+
+
+def _visual_keywords(pack: dict, limit: int = 3) -> list:
+    words, seen = [], set()
+    for word in re.findall(r"[A-Za-z][A-Za-z'-]{3,}",
+                           str(pack.get("title") or "")):
+        low = word.lower()
+        if low in _STOPWORDS or low in seen:
+            continue
+        seen.add(low)
+        words.append(word)
+        if len(words) >= limit:
+            break
+    return words
+
+
+def _visual_token(pack: dict) -> str:
+    text = f"{pack.get('title') or ''} {pack.get('body') or ''}"
+    m = re.search(r"\bv\d+(?:\.\d+)?(?:-mini|-wild)?\b", text, re.I) \
+        or re.search(r"\d+(?:\.\d+)?\s?%", text) \
+        or re.search(r"\b\d+(?:\.\d+)?x\b", text, re.I) \
+        or re.search(r"\b(?:19|20)\d{2}\b", text)
+    return m.group(0).upper() if m else ""
+
+
+def visual_kind_for(pack: dict) -> str:
+    """Which built-in visual describes this card's story.
+
+    A researcher may declare it (`"visual": {"kind": …}` in the
+    pack); otherwise the kind is derived from the pack's own
+    words — conversion stories get a converter, section-editing
+    stories a segmented bar with one lit section, music stories
+    a staff with a playhead, ideas a blueprint route to a target,
+    version/number stories the number itself. The generic
+    headline card is only the last resort."""
+    declared = (pack.get("visual") or {}).get("kind") \
+        if isinstance(pack.get("visual"), dict) else None
+    if declared in CARD_VISUAL_KINDS:
+        return declared
+    text = _visual_text(pack)
+    if re.search(r"round.?trip|decompile|convert|back into|"
+                 r"from_midi|to_midi|inverse|translate[sd]? (back|into)",
+                 text):
+        return "convert"
+    if "section" in text or "chorus" in text or "segment" in text:
+        return "sections"
+    if resolve_type(pack) == "idea":
+        # An idea is a proposal: the blueprint route describes
+        # it, whatever the project's domain words say.
+        return "blueprint"
+    if re.search(r"\bmusic|\bsong|\bmidi|\bmelod|\bnote[rs]?\b|"
+                 r"\baudio|\bchorus|\blyric", text):
+        return "music"
+    if _visual_token(pack):
+        return "release"
+    return "news_text"
+
+
+def visual_params(pack: dict, kind: str) -> dict:
+    """Facts for the painter, all measured from the pack text:
+    title keywords, the explicit version/number token (if any),
+    which segment is 'being edited', source/target labels for a
+    conversion. Nothing is invented."""
+    import hashlib
+    text = _visual_text(pack)
+    seed = int(hashlib.md5(
+        (pack.get("title") or "").encode()).hexdigest()[:6], 16)
+    sides = []
+    for cand in ("midi", "code", "audio", "text", "data", "model",
+                 "song", "program", "score"):
+        m = re.search(rf"\b{cand}", text)
+        if m:
+            sides.append((m.start(), cand.upper()))
+    sides = [c for _, c in sorted(sides)][:2]
+    return {"keywords": _visual_keywords(pack),
+            "token": _visual_token(pack),
+            "highlight": seed % 5,
+            "seed": seed,
+            "source": sides[0] if sides else "",
+            "target": sides[1] if len(sides) > 1 else "",
+            "host": ""}
+
+
+def with_card_visual(pack: dict) -> dict:
+    """News and idea packs arrive as bare JSON (no scene, no
+    paint): synthesize a visual that describes the card itself.
+    Packs with their own visual, and every other type, pass
+    through untouched; the input dict is never mutated."""
+    if resolve_type(pack) not in ("news", "idea") \
+            or pack.get("scene") or callable(pack.get("_paint")):
+        return pack
+    kind = visual_kind_for(pack)
+    return {**pack, "scene": {
+        "type": kind,
+        "anim": {"type": "cardvisual", "speed": 0.12},
+        "visual": visual_params(pack, kind)}}
+
+
+def with_news_visual(pack: dict) -> dict:
+    """Backwards-compatible name: news only."""
+    if resolve_type(pack) != "news":
+        return pack
+    return with_card_visual(pack)
 SCENES = ("orbits", "diagram", "network")
 # Declarative scene animation: subtle motion beats a still
 # picture. Values are speeds (relative; keep them slow).
@@ -191,6 +308,8 @@ def scan_packs(dirs) -> tuple[list[dict], list[str]]:
                     errors.append(f"{f}: {exc}")
                     continue
                 pack, err = validate_pack(raw, str(f))
+                if pack is not None:
+                    pack["_source"] = str(f)
             if err:
                 errors.append(f"{f}: {err}")
             elif pack["id"] in seen:
@@ -313,7 +432,323 @@ def paint_scene(cr, pack, w: float, h: float, colors: dict,
         cr.scale(s, s)
         cr.translate(-w / 2, -h / 2)
 
-    if stype == "orbits":
+    if stype == "news_text":
+        # Minimal text graphic for news: the headline set large,
+        # a reading line a square travels along, and abstract
+        # title-derived bars (decoration, not data — no axes, no
+        # numbers). Everything comes from the pack itself.
+        import hashlib
+        from urllib.parse import urlparse
+        mx = max(36.0, w * 0.07)
+        max_w = w - 2 * mx
+        size = 30.0
+        lines: list = []
+        while size > 15:
+            cr.select_font_face("Inter", 0, 1)
+            cr.set_font_size(size)
+            lines, cur = [], ""
+            for word in (pack.get("title") or "").split():
+                trial = f"{cur} {word}".strip()
+                if cr.text_extents(trial).width <= max_w or not cur:
+                    cur = trial
+                else:
+                    lines.append(cur)
+                    cur = word
+            if cur:
+                lines.append(cur)
+            if len(lines) <= 3:
+                break
+            size -= 3.0
+        shown = lines[:3]
+        y = h * 0.30
+        for i, line in enumerate(shown):
+            cr.set_source_rgba(
+                *text, 0.5 + 0.5 * (i + 1) / max(len(shown), 1))
+            cr.move_to(mx, y)
+            cr.show_text(line)
+            y += size * 1.25
+        ry = min(y + 12, h * 0.70)
+        cr.move_to(mx, ry)
+        cr.line_to(mx + max_w, ry)
+        cr.set_source_rgba(*muted, 0.4)
+        cr.set_line_width(1.2)
+        cr.stroke()
+        sx = mx + ((t * speed) % 1.0) * max_w
+        cr.rectangle(sx - 4.5, ry - 4.5, 9, 9)
+        cr.set_source_rgba(*strong, 0.95)
+        cr.fill()
+        digest = hashlib.md5(
+            (pack.get("title") or "").encode()).digest()
+        n = 24
+        bw = max_w / n
+        base = h * 0.88
+        for i in range(n):
+            bh = 5 + digest[i % len(digest)] % 17
+            cr.rectangle(mx + i * bw + bw * 0.22, base - bh,
+                         bw * 0.5, bh)
+            cr.set_source_rgba(*muted, 0.30 + 0.25 * (i % 3) / 2)
+            cr.fill()
+        host = urlparse(pack.get("link") or "").netloc
+        label = " · ".join(
+            x for x in (host, pack.get("topic") or "") if x)
+        if label:
+            cr.select_font_face("JetBrains Mono", 0, 0)
+            cr.set_font_size(10.5)
+            cr.set_source_rgba(*muted, 0.8)
+            cr.move_to(mx, h * 0.96)
+            cr.show_text(label.upper())
+    elif stype in ("sections", "convert", "music", "blueprint",
+                   "release"):
+        # Content-describing visuals for news/idea cards. All
+        # labels come from the pack itself (scene.visual, filled
+        # by visual_params from the pack's own words); geometry
+        # is the story's shape, not decoration.
+        import hashlib
+        from urllib.parse import urlparse
+        vis = scene.get("visual") or {}
+        kws = vis.get("keywords") or []
+        seed = int(vis.get("seed") or 0)
+        mx = max(36.0, w * 0.07)
+        max_w = w - 2 * mx
+
+        def _mono(text_, x, y, size=10.5, alpha=0.8, bold=False):
+            cr.select_font_face("JetBrains Mono", 0,
+                                1 if bold else 0)
+            cr.set_font_size(size)
+            cr.set_source_rgba(*muted, alpha)
+            cr.move_to(x, y)
+            cr.show_text(str(text_).upper())
+
+        def _caption():
+            host = urlparse(pack.get("link") or "").netloc
+            label = " · ".join(
+                x for x in (host, pack.get("topic") or "") if x)
+            if label:
+                _mono(label, mx, h * 0.96)
+            if kws:
+                _mono(" ".join(kws), mx, h * 0.14, alpha=0.55)
+
+        if stype == "sections":
+            # The story: one section is rewritten, the rest of
+            # the song/document stays exactly as it was.
+            n, gap = 5, 10.0
+            sw = (max_w - gap * (n - 1)) / n
+            sy, sh = h * 0.38, h * 0.20
+            hot = int(vis.get("highlight") or 0) % n
+            pulse = 0.75 + 0.25 * math.sin(t * 2.2)
+            for i in range(n):
+                x = mx + i * (sw + gap)
+                rr(x, sy, sw, sh, 8)
+                if i == hot:
+                    cr.set_source_rgba(*strong, pulse)
+                    cr.fill()
+                    cr.select_font_face("JetBrains Mono", 0, 1)
+                    cr.set_font_size(11)
+                    cr.set_source_rgba(*bg, 1)
+                    ext = cr.text_extents("EDIT")
+                    cr.move_to(x + sw / 2 - ext.width / 2,
+                               sy + sh / 2 + 4)
+                    cr.show_text("EDIT")
+                else:
+                    cr.set_source_rgba(*bg, 1)
+                    cr.fill_preserve()
+                    cr.set_source_rgba(*text, 0.45)
+                    cr.set_line_width(1.2)
+                    cr.stroke()
+            cr.move_to(mx, sy + sh + 26)
+            cr.line_to(mx + max_w, sy + sh + 26)
+            cr.set_source_rgba(*muted, 0.35)
+            cr.set_line_width(1.0)
+            cr.stroke()
+            _mono("one section changes · the rest stays intact",
+                  mx, sy + sh + 48, alpha=0.65)
+            _caption()
+        elif stype == "convert":
+            # The story: one representation becomes another —
+            # a square travels the arrow (and back, for a
+            # round-trip).
+            text_all = _visual_text(pack)
+            two_way = bool(re.search(
+                r"round.?trip|back|inverse", text_all))
+            bw_, bh_ = max_w * 0.26, h * 0.34
+            lx, rx = mx, mx + max_w - bw_
+            by = h * 0.30
+            for x, lab in ((lx, vis.get("source") or "INPUT"),
+                           (rx, vis.get("target") or "OUTPUT")):
+                rr(x, by, bw_, bh_, 10)
+                cr.set_source_rgba(*bg, 1)
+                cr.fill_preserve()
+                cr.set_source_rgba(*text, 0.6)
+                cr.set_line_width(1.2)
+                cr.stroke()
+                cr.select_font_face("JetBrains Mono", 0, 1)
+                cr.set_font_size(12)
+                cr.set_source_rgba(*text, 0.9)
+                ext = cr.text_extents(str(lab))
+                cr.move_to(x + bw_ / 2 - ext.width / 2,
+                           by + bh_ / 2 + 4)
+                cr.show_text(str(lab))
+            mid_l, mid_r = lx + bw_ + 14, rx - 14
+            for yy, forward in ((by + bh_ * 0.38, True),
+                                (by + bh_ * 0.66, False)):
+                if not forward and not two_way:
+                    continue
+                cr.move_to(mid_l, yy)
+                cr.line_to(mid_r, yy)
+                cr.set_source_rgba(*muted, 0.5)
+                cr.set_line_width(1.2)
+                cr.stroke()
+                frac = (t * 0.25) % 1.0
+                sx = mid_l + (frac if forward else 1 - frac) \
+                    * (mid_r - mid_l)
+                cr.rectangle(sx - 4.5, yy - 4.5, 9, 9)
+                cr.set_source_rgba(*strong, 0.95)
+                cr.fill()
+            _caption()
+        elif stype == "music":
+            # The story is music: a staff, notes from the title's
+            # hash, and a playhead sweeping them.
+            top, bot = h * 0.30, h * 0.62
+            cr.set_source_rgba(*muted, 0.45)
+            cr.set_line_width(1.0)
+            for i in range(5):
+                yy = top + i * (bot - top) / 4
+                cr.move_to(mx, yy)
+                cr.line_to(mx + max_w, yy)
+            cr.stroke()
+            digest = hashlib.md5(
+                (pack.get("title") or "").encode()).digest()
+            play = (t * 0.07) % 1.0
+            for i in range(14):
+                fx = (i + 0.5) / 14
+                x = mx + fx * max_w
+                yy = bot - (digest[i % 16] % 9) / 8 * (bot - top)
+                cr.arc(x, yy, 5.5, 0, 6.2832)
+                if fx <= play:
+                    cr.set_source_rgba(*strong, 0.95)
+                    cr.fill()
+                else:
+                    cr.set_source_rgba(*bg, 1)
+                    cr.fill_preserve()
+                    cr.set_source_rgba(*muted, 0.8)
+                    cr.set_line_width(1.1)
+                    cr.stroke()
+                cr.move_to(x + 5.5, yy)
+                cr.line_to(x + 5.5, yy - 18)
+                cr.set_source_rgba(*muted, 0.7)
+                cr.stroke()
+            px = mx + play * max_w
+            cr.move_to(px, top - 12)
+            cr.line_to(px, bot + 12)
+            cr.set_source_rgba(*strong, 0.8)
+            cr.set_line_width(1.4)
+            cr.stroke()
+            _caption()
+        elif stype == "blueprint":
+            # An idea: a route on a blueprint grid from where
+            # the project is to the target, with the first step
+            # written under it (the pack's own action_hint).
+            cr.set_source_rgba(*muted, 0.14)
+            cr.set_line_width(1.0)
+            gx = mx
+            while gx <= mx + max_w:
+                cr.move_to(gx, h * 0.16)
+                cr.line_to(gx, h * 0.72)
+                gx += 28
+            gy = h * 0.16
+            while gy <= h * 0.72:
+                cr.move_to(mx, gy)
+                cr.line_to(mx + max_w, gy)
+                gy += 28
+            cr.stroke()
+            x0, y0 = mx + max_w * 0.08, h * 0.58
+            x1, y1 = mx + max_w * 0.86, h * 0.26
+            cr.set_dash([5, 5])
+            cr.move_to(x0, y0)
+            cr.line_to(x0 + (x1 - x0) * 0.45, y0)
+            cr.line_to(x0 + (x1 - x0) * 0.45, y1)
+            cr.line_to(x1, y1)
+            cr.set_source_rgba(*text, 0.75)
+            cr.set_line_width(1.4)
+            cr.stroke()
+            cr.set_dash([])
+            frac = (t * 0.18) % 1.0
+            seg = frac * 3
+            si = int(seg)
+            sf = seg - si
+            pts = [(x0, y0),
+                   (x0 + (x1 - x0) * 0.45, y0),
+                   (x0 + (x1 - x0) * 0.45, y1), (x1, y1)]
+            ax, ay = pts[si]
+            bx, by = pts[si + 1]
+            cr.arc(ax + (bx - ax) * sf, ay + (by - ay) * sf,
+                   4.5, 0, 6.2832)
+            cr.set_source_rgba(*strong, 0.95)
+            cr.fill()
+            cr.rectangle(x0 - 5, y0 - 5, 10, 10)
+            cr.set_source_rgba(*strong, 0.9)
+            cr.fill()
+            ring = 9 + 2.5 * (0.5 + 0.5 * math.sin(t * 2.0))
+            cr.arc(x1, y1, ring, 0, 6.2832)
+            cr.set_source_rgba(*strong, 0.9)
+            cr.set_line_width(1.6)
+            cr.stroke()
+            hint = str(pack.get("action_hint") or "")
+            if hint:
+                _mono("first step", mx, h * 0.82, alpha=0.55)
+                cr.select_font_face("Inter", 0, 0)
+                cr.set_font_size(12.5)
+                cr.set_source_rgba(*text, 0.85)
+                words, lines, cur = hint.split(), [], ""
+                for word in words:
+                    trial = f"{cur} {word}".strip()
+                    if cr.text_extents(trial).width <= max_w or not cur:
+                        cur = trial
+                    else:
+                        lines.append(cur)
+                        cur = word
+                if cur:
+                    lines.append(cur)
+                yy = h * 0.90
+                for line in lines[:2]:
+                    cr.move_to(mx, yy)
+                    cr.show_text(line)
+                    yy += 16
+            _caption()
+        elif stype == "release":
+            # The story is a number: a version, a multiplier, a
+            # date — set huge, ringed, on a timeline.
+            token = vis.get("token") or (kws[0] if kws else "NEW")
+            cr.select_font_face("Inter", 0, 1)
+            cr.set_font_size(64)
+            ext = cr.text_extents(str(token))
+            cx, cy = w / 2, h * 0.46
+            cr.set_source_rgba(*text, 0.95)
+            cr.move_to(cx - ext.width / 2 - ext.x_bearing,
+                       cy - ext.height / 2 - ext.y_bearing)
+            cr.show_text(str(token))
+            ring = max(ext.width, 60) * 0.72 \
+                + 6 * (0.5 + 0.5 * math.sin(t * 1.8))
+            cr.arc(cx, cy, ring, 0, 6.2832)
+            cr.set_source_rgba(*muted, 0.5)
+            cr.set_line_width(1.2)
+            cr.stroke()
+            ty = h * 0.78
+            cr.move_to(mx, ty)
+            cr.line_to(mx + max_w, ty)
+            cr.set_source_rgba(*muted, 0.4)
+            cr.stroke()
+            for i, fx in enumerate((0.12, 0.5, 0.88)):
+                x = mx + fx * max_w
+                cr.arc(x, ty, 5 if i == 1 else 3.5, 0, 6.2832)
+                if i == 1:
+                    cr.set_source_rgba(*strong, 0.95)
+                    cr.fill()
+                else:
+                    cr.set_source_rgba(*muted, 0.7)
+                    cr.fill()
+            _caption()
+    elif stype == "orbits":
         cx, cy = w / 2, h / 2
         radii = ring_radii(w, h, int(scene.get("rings", 4)))
         drift = t * speed * 45 if atype == "orbit" else 0.0
@@ -524,6 +959,17 @@ class ContentEngine:
         self._served = [i for i in self._served if i in ids]
         if self._current and self._current["id"] not in ids:
             self._current = None
+
+    def project_packs(self, types=None) -> list:
+        """Packs deposited for the current project (its
+        .aat/content dir), optionally of the given types. The
+        generic catalogue is not project content: creator
+        bookkeeping (the unread cap) counts these only."""
+        if not getattr(self, "project_dir", None):
+            return []
+        base = str(Path(self.project_dir))
+        return [p for p in self.packs_for(types)
+                if str(p.get("_source") or "").startswith(base)]
 
     def set_project_dir(self, new_dir) -> bool:
         """Re-point the project content directory (the terminal

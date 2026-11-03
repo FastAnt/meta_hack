@@ -5,5 +5,6 @@
   "topic": "Replace with the detected domain label",
   "title": "The proposal, <= 60 chars",
   "body": "What to change or build, why it helps this project, and the smallest first step. The user can save it; a coding agent picks saved ideas up from .aat/research/saved_ideas.jsonl.",
-  "action_hint": "Concrete first step for the agent that implements this."
+  "action_hint": "Concrete first step for the agent that implements this.",
+  "visual": {"kind": "auto"}
 }

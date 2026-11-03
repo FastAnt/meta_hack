@@ -259,6 +259,8 @@ class Core:
                      "last_ask": 0.0}
         self.results: dict | None = None
         self._baseline: dict | None = None
+        self._baseline_pending = False
+        self._baseline_token: object | None = None
         self.step_count = 0
         self.mode_override: dict | None = None
         self._classify_at = 0.0
@@ -361,7 +363,7 @@ class Core:
                 # history attached at startup) gets no score.
                 self.dlog("score", "completion skipped: "
                                    "turn not watched live")
-            self._baseline = None
+            self._drop_baseline()
         self._last_state = state or self._last_state
         with self._lock:
             self.adapter_state = dict(self.adapter.state)
@@ -396,18 +398,36 @@ class Core:
             probe = probe.parent
         return cwd
 
+    def _drop_baseline(self):
+        """Forget the baseline and invalidate any snapshot still
+        walking the tree: its late result must not resurrect as
+        the next turn's baseline."""
+        self._baseline = None
+        self._baseline_pending = False
+        self._baseline_token = None
+
     def _start_baseline(self):
-        if self._baseline is not None:
+        if self._baseline is not None or self._baseline_pending:
             return
-        self._baseline = {}
         root = self._work_root()
         self._turn_root = root
+        # No placeholder dict here: a {} baseline is a lie (an
+        # empty project), and a turn ending before the snapshot
+        # lands would diff against it and report every file in
+        # the project as newly created. Pending stays explicit
+        # until the snapshot thread delivers under its token.
+        token = object()
+        self._baseline_token = token
+        self._baseline_pending = True
 
         def _snap():
             try:
-                self._baseline = snapshot_files(root)
+                snap = snapshot_files(root)
             except Exception:
-                self._baseline = {}
+                snap = {}
+            if self._baseline_token is token:
+                self._baseline = snap
+                self._baseline_pending = False
         threading.Thread(target=_snap, daemon=True).start()
 
     def _finish_observed_turn(self, agent: str, final: str, secs: int):
@@ -423,14 +443,18 @@ class Core:
         root = getattr(self, "_turn_root", None) \
             or self.project_path
         self._turn_root = None
-        _unknown = getattr(self, "_files_unknown", False)
+        # A baseline still walking the tree is no baseline: the
+        # turn's files are unmeasured, never a diff against the
+        # not-yet-snapshot (which used to report the whole tree).
+        _unknown = getattr(self, "_files_unknown", False) \
+            or getattr(self, "_baseline_pending", False)
         if _unknown:
             self._files_unknown = False
-            self._baseline = None
+            self._drop_baseline()
             files = []
         elif self._baseline is not None:
             files = session_diff(root, self._baseline)
-            self._baseline = None
+            self._drop_baseline()
         else:
             files = git_changes_scoped(root) or []
         self.results = {"files": files, "completion": None,
@@ -735,7 +759,7 @@ class Core:
             self._closed_screen_hash = getattr(
                 self, "_screen_hash", None)
             self._files_unknown = True
-            self._baseline = None
+            self._drop_baseline()
             secs = int(time.time() - self._rest_at)
             self.dlog("mode", "short turn inferred from screen "
                               f"cycle ({agent_name}, <= {secs}s)")
@@ -805,7 +829,7 @@ class Core:
                 self._closed_screen_hash = getattr(
                     self, "_screen_hash", None)
                 self._files_unknown = True
-                self._baseline = None
+                self._drop_baseline()
                 secs = int(time.time()
                            - getattr(self, "_rest_at", 0))
                 self.dlog("mode", "turn receipt appeared -> "
@@ -893,10 +917,14 @@ class Core:
             getattr(self, "_perc_history", [])) or "none"
         turn_s = int(now - p.turn_started_at) \
             if p.turn_started_at else 0
+        footer = " | ".join(
+            (screen or "").splitlines()[-3:])[:300]
         context = (f"screen text unchanged for {quiet_s}s; "
                    f"perceived state {p.state}"
                    + (f", turn open for {turn_s}s" if turn_s else "")
-                   + f"; previous verdicts: {prev}")
+                   + f"; previous verdicts: {prev}"
+                   + (f"; agent status bar: {footer}" if footer
+                      else ""))
 
         def _ask():
             try:
@@ -1098,6 +1126,10 @@ class Core:
             "key": f"muse:{self.adapter.state.get('session_id') or self._session_key or ''}",
             "agent": "muse",
             "mode": "done" if final_state == "completed" else "fail"}
+        if getattr(self, "_baseline_pending", False):
+            # Snapshot never landed: fall through to the git
+            # measurement below instead of diffing a phantom.
+            self._drop_baseline()
         if self._baseline is not None:
             files = session_diff(self.project_path, self._baseline)
         else:
@@ -1237,6 +1269,17 @@ class Core:
     def _refresh_unified(self, cli, snap):
         p = self.perception
         if not cli:
+            # One snapshot with no detected agent is a scan
+            # flicker, not a departure: only a sustained absence
+            # (3 s of refreshes) may close the turn. Without
+            # this, a working agent got a fake DONE every few
+            # seconds (prime incident, 23:44).
+            now = time.time()
+            since = getattr(self, "_agent_missing_since", None)
+            if since is None:
+                self._agent_missing_since = since = now
+            if p.agent and now - since < 3.0:
+                return
             ev = p.note_agent_gone()
             self._apply_perception_event(ev, p.agent)
             if p.agent:
@@ -1254,6 +1297,7 @@ class Core:
                                     "source": "heuristic",
                                     "files": [], "plan": []}
         else:
+            self._agent_missing_since = None
             ev = p.set_agent(cli)
             self._apply_perception_event(ev, cli)
             self._agent_key_now = \
@@ -1789,6 +1833,13 @@ headerbar button:hover {{ background: {p['surface2']}; color: {p['text']}; }}
   color: {p['body']}; border: 1px solid {p['border']};
   border-radius: 999px; padding: 4px 12px;
 }}
+.surf-popup {{
+  background: {p['surface']}; border: 1px solid {p['border2']};
+  border-radius: 999px; padding: 8px 16px;
+}}
+.surf-popup label {{
+  color: {p['text']}; font-family: {GROTESK}; font-size: 13px;
+}}
 .content-soon {{
   color: {p['body']}; font-family: {GROTESK}; font-size: 30px; font-weight: 600;
   letter-spacing: -0.5px;
@@ -2100,6 +2151,162 @@ _AGENTISH_RE = _re_mod.compile(
     r"|opencode|crush|goose|amp|droid)", _re_mod.I)
 
 
+# GDK keyvals / modifier masks as plain ints (stable X11 values),
+# so this helper stays importable without Gtk for tests.
+_ENTER_KEYVALS = (0xFF0D, 0xFF8D)  # KEY_Return, KEY_KP_Enter
+_MOD_SHIFT, _MOD_CTRL, _MOD_ALT = 1 << 0, 1 << 2, 1 << 3
+
+
+def modified_enter_sequence(keyval: int, state: int) -> bytes | None:
+    """Kitty CSI-u bytes for a modified Enter, else None.
+
+    VTE 0.76 grants TUIs neither the kitty keyboard protocol nor
+    xterm modifyOtherKeys, so it sends a bare CR for Shift+Enter
+    and Alt+Enter alike and the TUI sees plain Enter (submit) —
+    e.g. prime-agent, whose chat binds Shift+Enter to "insert
+    newline" and Alt+Enter to "queue follow-up", can never tell
+    them apart. Translate here, at the VTE widget, into the
+    CSI-u encoding such TUIs parse regardless of negotiation.
+    Plain Enter (lock masks aside) returns None: VTE's own CR
+    path stays exactly as it was."""
+    if keyval not in _ENTER_KEYVALS:
+        return None
+    mods = 1
+    if state & _MOD_SHIFT:
+        mods += 1
+    if state & _MOD_ALT:
+        mods += 2
+    if state & _MOD_CTRL:
+        mods += 4
+    if mods == 1:
+        return None
+    return f"\x1b[13;{mods}u".encode()
+
+
+# --- surf mode: companion content is summoned, never automatic ---
+SURF_POPUP_SECS = 4
+SURF_POPUP_TEXT = "Agent is working — press Alt+I to switch to surf mode"
+_I_KEYVALS = (0x69, 0x49, 0x0448, 0x0428)  # i, I, ш, Ш (RU layout)
+_I_HW = 31  # X11 hardware code of the physical I key
+
+
+def is_surf_shortcut(keyval: int, state: int,
+                     hardware_keycode: int = 0) -> bool:
+    """Alt+I (Ctrl+Alt+I is a different chord; leave it alone).
+
+    Matched by hardware keycode and Cyrillic keyval too: on a
+    Russian layout the physical I key reports ш, and a
+    keyval-only binding silently never fires."""
+    return (keyval in _I_KEYVALS or hardware_keycode == _I_HW) \
+        and bool(state & _MOD_ALT) and not (state & _MOD_CTRL)
+
+
+# --- explicit clipboard keys (VTE's implicit ones are not enough) ---
+_V_KEYVALS = (0x76, 0x56, 0x043C, 0x041C)  # v, V, м, М
+_C_KEYVALS = (0x63, 0x43, 0x0441, 0x0421)  # c, C, с, С
+_V_HW, _C_HW = 55, 54  # physical V / C keys (X11 hardware codes)
+_KEY_INSERT = 0xFF63
+
+
+def clipboard_key_action(keyval: int, state: int,
+                         hardware_keycode: int = 0) -> str | None:
+    """ "paste" / "copy" / None for a key press in the terminal.
+
+    Paste: Ctrl+V, Ctrl+Shift+V, Shift+Insert. Copy:
+    Ctrl+Shift+C (plain Ctrl+C stays the interrupt). Layout-proof
+    via hardware keycodes + Cyrillic keyvals, for the same reason
+    as is_surf_shortcut. Alt chords are never clipboard keys."""
+    if state & _MOD_ALT:
+        return None
+    ctrl = bool(state & _MOD_CTRL)
+    shift = bool(state & _MOD_SHIFT)
+    if keyval == _KEY_INSERT and shift and not ctrl:
+        return "paste"
+    if (keyval in _V_KEYVALS or hardware_keycode == _V_HW) and ctrl:
+        return "paste"
+    if (keyval in _C_KEYVALS or hardware_keycode == _C_HW) \
+            and ctrl and shift:
+        return "copy"
+    return None
+
+
+def surf_offer(busy_now: bool, was_busy: bool, *,
+               content_visible: bool = False,
+               resumed_blip: bool = False) -> str | None:
+    """Popup transition for one tick: "show" / "hide" / None.
+
+    The offer appears only on the busy rising edge — never while
+    the content is already on screen, and never twice for one
+    busy phase (a < 4 s dip in the busy signal is the same phase,
+    passed in as resumed_blip). It hides when the agent stops."""
+    if busy_now and not was_busy:
+        if content_visible or resumed_blip:
+            return None
+        return "show"
+    if not busy_now and was_busy:
+        return "hide"
+    return None
+
+
+# --- creator (bulb) modes: one / auto / off ---
+CREATOR_MODES = ("one", "auto", "off")
+CREATOR_MODE_LABELS = {
+    "one": "create one",
+    "auto": "create continuously",
+    "off": "don't create",
+}
+CREATOR_UNREAD_CAP = 10
+
+
+def next_creator_mode(mode: str) -> str:
+    """Bulb cycle: one -> auto -> off -> one."""
+    try:
+        return CREATOR_MODES[
+            (CREATOR_MODES.index(mode) + 1) % len(CREATOR_MODES)]
+    except ValueError:
+        return "one"
+
+
+def creator_mode_click(mode: str, busy: bool) -> tuple:
+    """One bulb click: (new mode, what to do about it).
+
+    The click always cycles — even while the researcher is
+    running (the button used to go insensitive for the whole
+    creation, minutes at a time, which read as a hang). Entering
+    "one" mid-flight queues the single creation for when the
+    current one finishes; it never spawns a second researcher."""
+    new = next_creator_mode(mode)
+    if new == "one":
+        return new, "queue_one" if busy else "spawn_one"
+    if new == "auto":
+        return new, "start_auto"
+    return new, "stop"
+
+
+def creator_spawn_wanted(mode: str, *, busy: bool,
+                         unread: int,
+                         cap: int = CREATOR_UNREAD_CAP) -> bool:
+    """The standing (timer-driven) spawn decision. "one" never
+    spawns from here — it is an entry action on the bulb click;
+    "auto" tops the selected category up to `cap` unread packs
+    and then pauses until some are read."""
+    return mode == "auto" and not busy and unread < cap
+
+
+def unread_pack_count(packs, served_ids) -> int:
+    served = set(served_ids or [])
+    return sum(1 for p in packs if p.get("id") not in served)
+
+
+def left_pane_target(left_override: str | None) -> str:
+    """Left pane with no manual override: the terminal, always.
+
+    The agent being busy no longer earns the content the pane;
+    only an explicit choice (Alt+I, square click, view cycle)
+    sets the override."""
+    return left_override or "terminal"
+
+
 def agentish_name(foreground: dict) -> str:
     """A foreground program that is (almost certainly) a coding
     agent TUI we have no adapter for — prime agent and friends.
@@ -2294,7 +2501,7 @@ def _render_screen_image(text: str) -> str:
     try:
         import base64 as _b64
         import cairo as _cairo
-        lines = [ln for ln in text.splitlines()][-40:]
+        lines = [ln for ln in text.splitlines()][-60:]
         W, H = 1120, 24 + 18 * max(1, len(lines))
         surf = _cairo.ImageSurface(_cairo.FORMAT_RGB24, W, H)
         cr = _cairo.Context(surf)
@@ -2306,7 +2513,7 @@ def _render_screen_image(text: str) -> str:
         y = 26
         for ln in lines:
             cr.move_to(10, y)
-            cr.show_text(ln[:118])
+            cr.show_text(ln[:160])
             y += 18
         import io as _io
         buf = _io.BytesIO()
@@ -2547,7 +2754,6 @@ def run_gui(project_arg: str | None) -> int:
         rdir = Path(root) / ".aat" / "research"
         S["_creator_llm"] = True
         S["_creator_type"] = want_type
-        S["btn_idea"].set_sensitive(False)
         _set_content_note(
             f"Creating a {want_type} for this project — the "
             "researcher agent is working…")
@@ -2623,7 +2829,6 @@ def run_gui(project_arg: str | None) -> int:
             return False
         S["_creator_proc"] = proc
         S["_creator_type"] = want_type
-        S["btn_idea"].set_sensitive(False)
         _set_content_note(
             f"Creating a {want_type} for this project — the "
             "researcher agent is working…")
@@ -2648,9 +2853,17 @@ def run_gui(project_arg: str | None) -> int:
     def _creator_done(root, code):
         S["_creator_proc"] = None
         S["_creator_llm"] = False
-        S["btn_idea"].set_sensitive(True)
+        # A "create one" clicked mid-flight was queued, not lost.
+        GLib.idle_add(_run_pending_one)
         core.dlog("content", f"creator finished (exit {code})")
         if code != 0:
+            if S.get("_creator_mode") == "auto":
+                # A failing researcher must not spin the loop:
+                # continuous mode gives up to "off".
+                S["_creator_mode"] = "off"
+                _sync_bulb()
+                core.dlog("content",
+                          "creator auto disabled after failure")
             S["_creator_fail_at"] = time.time()
             reason = ""
             try:
@@ -2724,6 +2937,10 @@ def run_gui(project_arg: str | None) -> int:
         if _tour_raw or os.environ.get("AAT_MOCKSTATE") \
                 or os.environ.get("AAT_SIM_FILE") \
                 or os.environ.get("AAT_CREATOR") == "off":
+            return
+        if S.get("_creator_mode") == "off":
+            core.dlog("content", "boot generation skipped: "
+                                 "creator mode is off")
             return
         root = Path(project_path)
         try:
@@ -2805,6 +3022,9 @@ def run_gui(project_arg: str | None) -> int:
                "left_override": None, "_agent_busy": False,
                "_busy_since": None, "_busy_end": None,
                "_busy_since_keep": None,
+               "_surf_busy": False, "_surf_busy_end": None,
+               "_surf_popup_gen": 0,
+               "_creator_mode": "one", "_creator_auto_at": 0.0,
                "content_filter": _initial_filter,
                "content_trail": [], "content_pos": -1,
                "_page_at": 0.0, "_scroll_acc": 0.0,
@@ -3655,6 +3875,64 @@ def run_gui(project_arg: str | None) -> int:
         S["vte"] = vte
         pty_info = VtePtyInfo(vte)
 
+        def on_vte_key(_term, event):
+            # Clipboard keys, explicit and layout-proof: VTE's
+            # implicit Ctrl+Shift+V binding matches keyvals, so
+            # on a Russian layout (V reports as м) paste silently
+            # never happens. paste_clipboard() honours bracketed
+            # paste, so a multiline prompt lands in the agent's
+            # editor whole instead of submitting line by line.
+            caction = clipboard_key_action(
+                event.keyval, int(event.state),
+                int(getattr(event, "hardware_keycode", 0) or 0))
+            if caction == "paste":
+                vte.paste_clipboard()
+                return True
+            if caction == "copy":
+                vte.copy_clipboard_format(Vte.Format.TEXT)
+                return True
+            # Alt+I summons surf mode. Intercepted here, on the
+            # widget: by the time the window handler runs, VTE has
+            # already sent ESC+i to the shell/agent. Swallow it.
+            if is_surf_shortcut(
+                    event.keyval, int(event.state),
+                    int(getattr(event, "hardware_keycode", 0) or 0)):
+                toggle_surf()
+                return True
+            # Modified Enter: VTE would collapse it to a bare CR
+            # (submit in every agent chat). Feed the CSI-u form
+            # instead and swallow the event so VTE does not also
+            # send CR. On the widget, not the window: the window
+            # handler runs only after VTE already sent the CR.
+            seq = modified_enter_sequence(event.keyval, int(event.state))
+            if seq is None:
+                return False
+            vte.feed_child(seq)
+            return True
+        vte.connect("key-press-event", on_vte_key)
+
+        def on_vte_button(_term, event):
+            # Right-click menu: the discoverable copy/paste path
+            # (VTE ships no menu of its own).
+            if event.button != 3:
+                return False
+            menu = Gtk.Menu()
+            copy_item = Gtk.MenuItem(label="Copy")
+            copy_item.set_sensitive(vte.get_has_selection())
+            copy_item.connect(
+                "activate", lambda *_: vte.copy_clipboard_format(
+                    Vte.Format.TEXT))
+            paste_item = Gtk.MenuItem(label="Paste")
+            paste_item.connect(
+                "activate", lambda *_: vte.paste_clipboard())
+            menu.add(copy_item)
+            menu.add(paste_item)
+            menu.show_all()
+            S["_vte_menu"] = menu
+            menu.popup_at_pointer(event)
+            return True
+        vte.connect("button-press-event", on_vte_button)
+
         overlay = Gtk.Overlay()
         paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         # Left pane: the terminal, or — while the agent works — the
@@ -3690,12 +3968,11 @@ def run_gui(project_arg: str | None) -> int:
         S["deck_meta"].get_style_context().add_class("deck-meta")
         top_row.pack_start(S["deck_meta"], False, False, 4)
         S["btn_idea"] = Gtk.Button()
-        S["btn_idea"].set_tooltip_text(
-            "Pick what content to generate next")
         S["btn_idea"].get_style_context().add_class("icon-btn")
         bulb = Gtk.DrawingArea()
         bulb.set_size_request(16, 16)
         bulb.connect("draw", draw_bulb)
+        S["bulb_glyph"] = bulb
         S["btn_idea"].add(bulb)
         S["btn_idea"].connect("clicked",
                               lambda *_: idea_pick_type())
@@ -3822,6 +4099,16 @@ def run_gui(project_arg: str | None) -> int:
         empty_box.pack_start(S["game_empty_title"], False, False, 0)
         empty_box.pack_start(S["game_empty_sub"], False, False, 0)
         empty_box.pack_start(S["empty_fb"], False, False, 0)
+        # The empty state used to be a dead end on screen (the
+        # Next/Prev row lives inside the hidden card scroll):
+        # always offer the way back to the terminal.
+        S["btn_empty_back"] = Gtk.Button(
+            label="\u2190 Back to terminal")
+        S["btn_empty_back"].get_style_context().add_class("game-next")
+        S["btn_empty_back"].set_halign(Gtk.Align.CENTER)
+        S["btn_empty_back"].connect(
+            "clicked", lambda *_: show_terminal())
+        empty_box.pack_start(S["btn_empty_back"], False, False, 6)
         S["game_empty"] = empty_box
         content.pack_start(empty_box, True, False, 0)
         # Shorts-like paging: wheel / two-finger scroll at an edge and
@@ -3967,7 +4254,7 @@ def run_gui(project_arg: str | None) -> int:
         settings_box.set_margin_start(12)
         settings_box.set_margin_end(12)
         settings_box.set_margin_bottom(14)
-        S["set_autoshow"] = Gtk.CheckButton(label="Auto-show overlay while the agent works")
+        S["set_autoshow"] = Gtk.CheckButton(label="Auto-show results when the agent finishes")
         S["set_autoshow"].set_active(True)
         settings_box.pack_start(S["set_autoshow"], False, False, 0)
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -4220,10 +4507,26 @@ def run_gui(project_arg: str | None) -> int:
         panel.set_visible(False)
         overlay.add_overlay(panel)
 
+        # Surf offer popup: a pill at the top centre of the window.
+        # Plain no-window widgets only — it never takes keyboard
+        # focus and clicks fall through it to the panes below.
+        surf_popup = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        surf_popup.get_style_context().add_class("surf-popup")
+        surf_popup.set_halign(Gtk.Align.CENTER)
+        surf_popup.set_valign(Gtk.Align.START)
+        surf_popup.set_margin_top(14)
+        surf_popup.set_can_focus(False)
+        surf_label = Gtk.Label(label=SURF_POPUP_TEXT)
+        surf_label.set_can_focus(False)
+        surf_popup.add(surf_label)
+        S["surf_popup"] = surf_popup
+        overlay.add_overlay(surf_popup)
+
         win.connect("key-press-event", on_key)
         win.show_all()
         scene.set_visible(False)
         panel.set_visible(False)
+        surf_popup.set_visible(False)
 
         # spawn the shell inside VTE
         def on_spawn(term, pid, error, _data=None):
@@ -4239,6 +4542,7 @@ def run_gui(project_arg: str | None) -> int:
             None, GLib.SpawnFlags.DEFAULT, None, None, -1, None,
             on_spawn, None)
         vte.grab_focus()
+        _sync_bulb()
         _sync_filter_chips()
         _refresh_settings_history()
         serve_game(False)
@@ -4602,6 +4906,11 @@ def run_gui(project_arg: str | None) -> int:
         """An empty filter is a request to create that content."""
         title, sub = _empty_copy(kind)
         _show_empty(title, sub)
+        if S.get("_creator_mode") == "off":
+            _set_content_note(
+                "Creator is off — click the bulb to allow "
+                "creating content again.")
+            return
         if _tour_raw:
             _set_content_note(
                 "Tour mode: no creator is spawned from a preview.")
@@ -4641,7 +4950,8 @@ def run_gui(project_arg: str | None) -> int:
         _sync_filter_chips()
         core.dlog("content",
                   f"deck exhausted ({kind}: {total} seen)")
-        if kind in ("news", "idea") and not _tour_raw:
+        if kind in ("news", "idea") and not _tour_raw \
+                and S.get("_creator_mode") != "off":
             ok = spawn_creator(kind, core._work_root(),
                                f"deck-exhausted-{kind}")
             if ok:
@@ -4743,6 +5053,11 @@ def run_gui(project_arg: str | None) -> int:
         GLib.timeout_add(16, lambda: _step(1))
 
     def _render_game(game, animate: bool = False):
+        if game is not None:
+            # News/idea JSON packs carry no visual: synthesize
+            # one describing the card (copy only — the engine
+            # pack is shared).
+            game = ce.with_card_visual(game)
         ctl = S["game_ctl"]
         ctl.update(game=game, answered=False, chosen=None, btns={},
                    t0=time.time(), verdict=None, verdict_t0=0.0)
@@ -5020,15 +5335,40 @@ def run_gui(project_arg: str | None) -> int:
         w = area.get_allocated_width()
         h = area.get_allocated_height()
         cx, cy = w / 2, h / 2 - 1.5
-        cr.set_source_rgba(*PALC["text"], 0.95)
+        # The fill carries the creator mode: outline = create
+        # one, filled = create continuously, faint + slash = off.
+        mode = S.get("_creator_mode", "one")
+        alpha = 0.35 if mode == "off" else 0.95
+        cr.set_source_rgba(*PALC["text"], alpha)
         cr.set_line_width(1.3)
         cr.arc(cx, cy, 4.6, 0, 6.2832)
+        if mode == "auto":
+            cr.fill()
+            cr.set_source_rgba(*PALC["bg"], 0.95)
         cr.stroke()
         for dy in (4.2, 6.0):
             cr.move_to(cx - 2.2, cy + dy)
             cr.line_to(cx + 2.2, cy + dy)
             cr.stroke()
+        if mode == "off":
+            cr.set_source_rgba(*PALC["text"], alpha)
+            cr.move_to(cx - 5.5, cy + 6.5)
+            cr.line_to(cx + 5.5, cy - 6.5)
+            cr.stroke()
         return False
+
+    def _sync_bulb():
+        mode = S.get("_creator_mode", "one")
+        nxt = next_creator_mode(mode)
+        btn = S.get("btn_idea")
+        if btn is not None:
+            btn.set_tooltip_text(
+                f"Creator: {CREATOR_MODE_LABELS[mode]} "
+                f"(in the selected category) — click: "
+                f"{CREATOR_MODE_LABELS[nxt]}")
+        glyph = S.get("bulb_glyph")
+        if glyph is not None:
+            glyph.queue_draw()
 
     def choose_content_type():
         # The active chip is a preference for generation too; with
@@ -5041,9 +5381,38 @@ def run_gui(project_arg: str | None) -> int:
         return random.choice(["game", "fact", "news", "idea"])
 
     def idea_pick_type():
-        if _creator_busy():
+        """The bulb cycles the creator mode: create one ->
+        create continuously -> don't create -> create one…
+
+        Entering "one" creates a single pack in the selected
+        category right away (the old bulb behaviour). Entering
+        "auto" starts the top-up loop; "off" stops it. The click
+        always works: while a creation is running it still
+        cycles the mode, and a queued "one" is created when the
+        current run finishes — never a second researcher."""
+        mode, action = creator_mode_click(
+            S.get("_creator_mode", "one"), _creator_busy())
+        S["_creator_mode"] = mode
+        _sync_bulb()
+        core.dlog("content", f"creator mode -> {mode} ({action})")
+        if action == "stop":
+            S["_creator_one_pending"] = False
             _set_content_note(
-                "The researcher agent is already creating…")
+                "Creator off — no new content will be created. "
+                "Click the bulb to re-enable.")
+            return
+        if action == "start_auto":
+            _set_content_note(
+                "Creating continuously in the selected category "
+                f"— up to {CREATOR_UNREAD_CAP} unread project "
+                "cards, then it pauses.")
+            _creator_auto_tick()
+            return
+        if action == "queue_one":
+            S["_creator_one_pending"] = True
+            _set_content_note(
+                "The researcher is already creating — one more "
+                "will follow when it finishes.")
             return
         picked = choose_content_type()
         why = "filter" if S.get("content_filter") != "all" else "random"
@@ -5054,6 +5423,50 @@ def run_gui(project_arg: str | None) -> int:
             _set_content_note(
                 "Creator agent unavailable — see the decision "
                 "log ([content] creator …).")
+
+    def _run_pending_one():
+        """Fire a "create one" that was clicked while another
+        creation was running (see creator_mode_click)."""
+        if not S.pop("_creator_one_pending", False):
+            return False
+        if S.get("_creator_mode") != "one" or _creator_busy():
+            return False
+        core.dlog("content", "creator: queued 'one' now running")
+        spawn_creator(choose_content_type(), core._work_root(),
+                      "bulb-queued")
+        return False
+
+    def _creator_auto_tick():
+        """Standing loop for creator mode "auto": top the
+        selected category up to CREATOR_UNREAD_CAP unread packs,
+        then pause until some are read. Driven by the UI tick;
+        throttled so a failed spawn cannot spin."""
+        if time.time() - S.get("_creator_auto_at", 0) < 3:
+            return
+        if os.environ.get("AAT_CREATOR") == "off":
+            return
+        # The cap counts project content only — the generic
+        # catalogue would fill it forever (500 facts!).
+        unread = unread_pack_count(
+            engine.project_packs(_active_types()), engine._served)
+        if not creator_spawn_wanted(
+                S.get("_creator_mode", "one"),
+                busy=_creator_busy(), unread=unread):
+            if S.get("_creator_mode") == "auto" \
+                    and unread >= CREATOR_UNREAD_CAP \
+                    and not S.get("_creator_capped"):
+                S["_creator_capped"] = True
+                core.dlog("content",
+                          f"creator auto paused: {unread} unread "
+                          f"(cap {CREATOR_UNREAD_CAP})")
+            return
+        S["_creator_capped"] = False
+        S["_creator_auto_at"] = time.time()
+        picked = choose_content_type()
+        core.dlog("content",
+                  f"creator auto: {unread} unread, creating "
+                  f"{picked}")
+        spawn_creator(picked, core._work_root(), "auto")
 
     def game_open_link():
         game = S["game_ctl"].get("game") or {}
@@ -5359,14 +5772,9 @@ def run_gui(project_arg: str | None) -> int:
     def current_left_target() -> str:
         if not S["overlay_on"] or S["view_mode"] == "term_feed":
             return "terminal"
-        if S.get("left_override"):
-            return S["left_override"]
-        # Content earns the left pane once the agent has been
-        # away for 7 s — short tasks never interrupt typing.
-        if S.get("_agent_busy") and S.get("_busy_since") \
-                and time.time() - S["_busy_since"] >= 7:
-            return "content"
-        return "terminal"
+        # Surf mode is manual now (Alt+I): a busy agent earns only
+        # the 4 s popup offer, never the pane itself.
+        return left_pane_target(S.get("left_override"))
 
     def apply_left():
         if S["view_mode"] == "term_feed":
@@ -5405,6 +5813,58 @@ def run_gui(project_arg: str | None) -> int:
         """Bring the companion content forward (Feed + visualisation)."""
         set_view("feed_vis")
 
+    def hide_surf_popup():
+        S["_surf_popup_gen"] += 1
+        popup = S.get("surf_popup")
+        if popup is not None:
+            popup.set_visible(False)
+
+    def show_surf_popup():
+        popup = S.get("surf_popup")
+        if popup is None:
+            return
+        S["_surf_popup_gen"] += 1
+        gen = S["_surf_popup_gen"]
+        popup.set_visible(True)
+        core.dlog("ui", "surf offer shown (Alt+I, "
+                        f"{SURF_POPUP_SECS}s, focus untouched)")
+
+        def _expire():
+            if S.get("_surf_popup_gen") == gen:
+                popup.set_visible(False)
+            return False
+        GLib.timeout_add(SURF_POPUP_SECS * 1000, _expire)
+
+    def surf_offer_tick(busy_now: bool):
+        """Busy edge -> offer surf mode; busy end -> withdraw it.
+        Runs on every tick, overlay or not: the plain terminal is
+        exactly where the user is typing when the agent leaves."""
+        was_busy = bool(S.get("_surf_busy"))
+        resumed = bool(
+            S.get("_surf_busy_end")
+            and time.time() - S["_surf_busy_end"] < SURF_POPUP_SECS)
+        action = surf_offer(busy_now, was_busy,
+                            content_visible=_content_visible(),
+                            resumed_blip=resumed)
+        if busy_now and not was_busy:
+            S["_surf_busy"] = True
+        elif not busy_now and was_busy:
+            S["_surf_busy"] = False
+            S["_surf_busy_end"] = time.time()
+        if action == "show":
+            show_surf_popup()
+        elif action == "hide":
+            hide_surf_popup()
+
+    def toggle_surf():
+        """Alt+I: surf mode on; pressed over the content, back to
+        the terminal. Manual only — nothing calls this on a timer."""
+        hide_surf_popup()
+        if _content_visible():
+            show_terminal()
+        else:
+            show_content()
+
     def user_close():
         """The user explicitly leaves the overlay: never auto-reopen
         for the same task afterwards (the original stuck-overlay bug)."""
@@ -5419,6 +5879,15 @@ def run_gui(project_arg: str | None) -> int:
 
     def on_key(win, event):
         kv = event.keyval
+        # Alt+I outside the terminal (content, square, buttons have
+        # focus): same surf toggle. Text fields keep their keys.
+        if is_surf_shortcut(
+                kv, int(event.state),
+                int(getattr(event, "hardware_keycode", 0) or 0)) \
+                and not isinstance(win.get_focus(),
+                                   (Gtk.Entry, Gtk.TextView)):
+            toggle_surf()
+            return True
         ctrl_shift = (event.state & Gdk.ModifierType.CONTROL_MASK) and \
                      (event.state & Gdk.ModifierType.SHIFT_MASK)
         if ctrl_shift and kv in (Gdk.KEY_O, Gdk.KEY_o) or \
@@ -5510,7 +5979,11 @@ def run_gui(project_arg: str | None) -> int:
         if not text:
             return ""
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-        return "\n".join(lines[-40:])
+        # Fuller, not just the tail: the agent's status bar
+        # (subagent/shell counters) sits at the very bottom, and
+        # a 40-line window over a long prompt used to crop the
+        # context the verdict needs.
+        return "\n".join(lines[-60:])
 
     def display_state():
         core.refresh_agent_state()
@@ -5684,10 +6157,10 @@ def run_gui(project_arg: str | None) -> int:
                         win, 0, 0, al.width, al.height)
                     if pb is not None:
                         wd = pb.get_width()
-                        if wd > 1100:
+                        if wd > 1400:
                             pb = pb.scale_simple(
-                                1100, max(1, pb.get_height()
-                                          * 1100 // wd),
+                                1400, max(1, pb.get_height()
+                                          * 1400 // wd),
                                 GdkPixbuf.InterpType.BILINEAR)
                         ok, buf = pb.save_to_bufferv(
                             "jpeg", ["quality"], ["72"])
@@ -5711,6 +6184,7 @@ def run_gui(project_arg: str | None) -> int:
                 f"{frame} Creating a {S.get('_creator_type')} "
                 "for this project — the researcher agent is "
                 "working…")
+        _creator_auto_tick()
         if S.get("mode_btn"):
             S["mode_btn"].queue_draw()
         # Auto theme follows the system live (checked on this timer;
@@ -5752,8 +6226,12 @@ def run_gui(project_arg: str | None) -> int:
                     and S["results_shown_task"] != task_key:
                 S["results_shown_task"] = task_key
                 set_overlay(True)  # show what the agent did
-            elif gate.get("decision") == "long":
-                set_overlay(True)  # System 1 predicted a long task
+        # Surf offer: a busy agent no longer opens anything by
+        # itself (the old "long task" gate verdict included). It
+        # earns a 4 s popup; Alt+I is the only way into the Feed.
+        surf_offer_tick(core.turn_open() and (
+            bool(agent.get("agent"))
+            or mode_for_agent(agent) != "blinky"))
 
         if S["overlay_on"]:
             mode = mode_for_agent(agent)
@@ -5830,13 +6308,8 @@ def run_gui(project_arg: str | None) -> int:
                     and S.get("_busy_since_keep")
                 if not resumed:
                     S["_busy_since"] = time.time()
-                    S["left_override"] = None  # new phase: auto
-                    S["_view_manual"] = False
-                    if S["view_mode"] == "term_feed":
-                        # A manual Terminal+Feed pairing also ends
-                        # with the phase: back to the visualisation.
-                        S["view_mode"] = "term_vis"
-                        apply_view()
+                    # No pane bookkeeping here any more: a new busy
+                    # phase must not erase the user's manual view.
                 S["_agent_busy"] = True
             elif not busy_now and S.get("_agent_busy"):
                 S["_agent_busy"] = False
@@ -5869,7 +6342,8 @@ def run_gui(project_arg: str | None) -> int:
             S["hint"].set_text(
                 "Click the square to return to the terminal"
                 if mode == "shuffle"
-                else "Esc \u2014 back to the terminal \u00b7 Ctrl+Shift+O")
+                else "Esc \u2014 back to the terminal \u00b7 "
+                     "Alt+I \u2014 surf mode \u00b7 Ctrl+Shift+O")
 
             # end-of-session results: three squares under the main one
             res = core.results

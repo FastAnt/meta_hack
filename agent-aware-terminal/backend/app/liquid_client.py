@@ -246,16 +246,28 @@ class LiquidClient:
         verdicts). It answers four bounded questions at once:
         what activity, is it working, does it need the user, is
         it finished. Returns a Verdict-shaped dict or None."""
+        footer = "\n".join((screen or "").splitlines()[-5:])
         state = (f"Terminal of the {agent} coding agent (a TUI). "
                  + (f"Measured context: {context}\n" if context else "")
-                 + f"Most recent screen text at the bottom:\n\n"
-                   f"{(screen or '')[-1800:]}")
+                 + f"Screen text (most recent at the bottom):\n\n"
+                   f"{(screen or '')[-4500:]}"
+                 + f"\n\nThe agent's status bar (final screen "
+                   f"lines — read these before judging):\n{footer}")
         answers = self.decide(state, {
             "screen_kind": {
                 "type": "choice",
                 "instructions": (
                     "Judge ONLY from the screenshot and terminal "
-                    "text what the agent is doing right now. An "
+                    "text what the agent is doing right now. Read "
+                    "the WHOLE screenshot top to bottom, including "
+                    "the very bottom status bar, before judging: "
+                    "counters there such as 'N subagents', "
+                    "heartbeats, running shells, spinners or an "
+                    "elapsed 'Thinking/Working' timer are direct "
+                    "evidence the agent is still working — with "
+                    "subagents > 0 it IS working, even if the main "
+                    "chat area looks quiet or shows an empty "
+                    "prompt. An "
                     "empty input box / prompt with nothing running "
                     "is idle_at_prompt. A spinner, elapsed "
                     "'Working...' timer or streaming reasoning "
@@ -279,7 +291,10 @@ class LiquidClient:
                     "Is the agent actively working on a task "
                     "right now (thinking, using tools, waiting "
                     "on a command or the network mid-task), as "
-                    "opposed to sitting idle at its prompt?"),
+                    "opposed to sitting idle at its prompt? A "
+                    "non-zero subagent or shell count in the "
+                    "status bar, or a Thinking/Working indicator, "
+                    "means it is working."),
             },
             "needs_user": {
                 "type": "noul",
@@ -293,7 +308,10 @@ class LiquidClient:
                 "instructions": (
                     "Has the agent completed its current task "
                     "and reported the result, so the turn is "
-                    "over?"),
+                    "over? It is NOT finished while any subagent "
+                    "or shell counter in the status bar is "
+                    "non-zero, or a Thinking/Working indicator "
+                    "is present."),
             },
         }, images=[image] if image else None)
         if not answers:

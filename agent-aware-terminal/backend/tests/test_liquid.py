@@ -92,6 +92,38 @@ class LiquidClientTests(unittest.TestCase):
                          "noul")
         self.assertIn("screen unchanged for 30s", seen["state"])
 
+    def test_perceive_prompt_reads_the_whole_screen(self):
+        # Live incident: prime's main chat looked quiet while
+        # its bottom status bar said "7 subagents" — the model
+        # called the turn finished. The prompt must send the
+        # whole screen (not a small tail) and order the model to
+        # read the status bar before judging.
+        seen = {}
+
+        def fake_post(url, headers=None, json=None, timeout=None):
+            seen.update(json)
+            return FakeResponse({"answers": {
+                "screen_kind": {"type": "choice",
+                                "choice": "thinking",
+                                "confidence": 0.55},
+                "is_working": {"type": "noul", "noul": 0.93},
+                "needs_user": {"type": "noul", "noul": 0.02},
+                "is_finished": {"type": "noul", "noul": 0.01}}})
+
+        requests.post = fake_post
+        screen = ("TOP-OF-SCREEN\n" + "x" * 3000
+                  + "\n◆ 7 subagents · 0 heartbeats · 0 shells")
+        LiquidClient(api_key="liquid_test").perceive_screen(
+            screen, "prime", image="data:image/jpeg;base64,AA")
+        self.assertIn("TOP-OF-SCREEN", seen["state"])
+        self.assertIn("7 subagents", seen["state"])
+        kind = seen["questions"]["screen_kind"]["instructions"]
+        self.assertIn("status bar", kind)
+        self.assertIn("subagent",
+                      seen["questions"]["is_working"]["instructions"])
+        self.assertIn("subagent",
+                      seen["questions"]["is_finished"]["instructions"])
+
     def test_unconfigured_client_returns_none(self):
         client = LiquidClient(api_key="")
         self.assertIsNone(client.predict_long_task("s"))

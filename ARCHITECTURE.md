@@ -136,9 +136,26 @@ icon (on the right pane) cycles the pairing like the theme icon
 cycles auto → light → dark: Terminal + visualisation → Feed +
 visualisation → Terminal + Feed → back (in Terminal + Feed the
 icon sits on the Feed pane, so the cycle is always reachable).
-Left pane rule: agent busy ≥ 7 s → companion content; agent
-waits/finishes → terminal. Clicking the big square swaps panes
-manually until the phase changes. Esc peels back layer by layer.
+Left pane rule: the companion content (surf mode) is never
+automatic. When the agent goes busy, a focus-free popup pill
+appears at the top of the window for 4 s — "press Alt+I to
+switch to surf mode" — and typing in the terminal is never
+interrupted or stolen. Clipboard keys are explicit in the
+app (Ctrl+V / Ctrl+Shift+V / Shift+Insert paste via
+`paste_clipboard()` — bracketed, so multiline prompts land
+whole in an agent's editor; Ctrl+Shift+C copy; right-click
+menu on the terminal) and, like Alt+I, matched by hardware
+keycode + Cyrillic keyvals: on a Russian layout the physical
+V key reports м, and keyval-only bindings silently never fire.
+Alt+I (intercepted on the VTE widget,
+before the shell/agent can see ESC+i) swaps to Feed +
+visualisation; pressed again over the content it returns to
+the terminal. Clicking the big square and the view cycle swap
+panes manually too, and a manual choice survives busy phases.
+A busy agent also no longer auto-opens the split on a "long
+task" gate verdict; only finished-turn results still do (the
+Settings checkbox now governs just that). Esc peels back
+layer by layer.
 The header theme icon cycles Auto (follows the system, switches
 live) → Light → Dark; the choice persists in `ui_prefs.json`
 (together with the view pairing). Icon-only buttons carry no
@@ -257,7 +274,17 @@ code-measured dynamics (screen-quiet seconds, previous
 verdicts); `backend/app/screen_perception.py` smooths that
 stream into turn state with hysteresis (work opens a turn, two
 confirmed rest verdicts close it, a vanished process closes
-it deterministically). The Muse session-log adapter does not
+it deterministically). The model is sent the fullest screen
+we have (60 lines / 4500 chars of text plus the screenshot at
+1400 px, the final lines repeated as the agent's status bar)
+and is ordered to read that status bar before judging:
+non-zero subagent/shell counters or a Thinking indicator mean
+working, never finished — a quiet main chat over seven running
+subagents once read as a completed turn. Detection flicker is
+not an ending either: an agent identity change inside 3 s of
+a turn opening, or a single snapshot with no agent detected,
+cannot close the turn (a sustained 3 s absence can). The Muse
+session-log adapter does not
 run in this mode at all. Files remain baseline-diff truth and
 scores remain System-1 judgments over measured facts. Without
 a Liquid key (or `AAT_PERCEPTION=legacy`) the older layered
@@ -313,15 +340,43 @@ The creator (provider, model, LLM base URL, custom command, Codex sandbox) is al
 
 ### Creator auto-launch
 
-The app can start the researcher itself. The bulb button
-picks a content type, shows a spinner in the pane, and spawns
-the configured creator with a bounded one-item mission
-(researcher skill, real project, write only inside `.aat/`);
-the deposited pack is served the moment the agent exits.
-Opening a project with an empty `.aat/content` gets the same
-treatment once (7-day marker) when a deterministic substance
-gate plus a System-1 worth vote both pass. The generic
-catalogue is filler for waits with no project pack yet.
+The app can start the researcher itself. The bulb button is
+a three-state creator mode (outline / filled / slashed bulb;
+the tooltip spells it out): **create one** (default — entering
+it spawns a single pack in the selected filter category, with
+a spinner in the pane and a bounded one-item mission: researcher
+skill, real project, write only inside `.aat/`; the deposited
+pack is served the moment the agent exits), **create
+continuously** (keep topping the selected category up until
+10 unread *project* packs exist — the generic catalogue never
+counts toward the cap — then pause until some are read; a
+creator failure drops the mode back to off rather than
+spinning), and **don't create** (no spawns at all — the
+empty-filter, deck-exhausted and boot triggers all respect
+it). The bulb stays clickable while the researcher runs
+(creations take minutes): clicks still cycle the mode, and a
+"create one" clicked mid-flight is queued for when the current
+run finishes, never a second researcher. Opening a project
+with an empty `.aat/content` gets the
+one-shot treatment once (7-day marker) when a deterministic
+substance gate plus a System-1 worth vote both pass. The
+generic catalogue is filler for waits with no project pack yet.
+
+News and idea packs (bare JSON, no scene of their own) get a
+built-in visual that describes the card itself, synthesized
+in `with_card_visual`: the kind follows the story — `sections`
+(one segment lit EDIT, the rest intact), `convert` (labelled
+boxes, a square travelling between representations), `music`
+(staff + playhead), `blueprint` (ideas: dashed route to a
+target with the pack's action_hint as the first step),
+`release` (the explicit version/number token, ringed) — with
+the generic headline card only as a last resort. Labels and
+numbers are extracted from the pack's own text, never
+invented; a researcher may declare the kind outright via
+`"visual": {"kind": …}` in the JSON. The content empty state
+always carries a
+"← Back to terminal" button (its Next/Prev row is hidden with
+the card scroll, which used to make it a dead end).
 
 ## Development workflow
 

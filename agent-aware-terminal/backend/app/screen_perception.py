@@ -97,12 +97,24 @@ class ScreenPerception:
         self._pending_mode: str | None = None
 
     # -- identity -------------------------------------------------
+    AGENT_FLICKER_GRACE_S = 3.0
+
     def set_agent(self, agent: str | None, now: float | None = None):
         """A different agent in the terminal: fresh perception."""
         if agent == self.agent:
             return None
+        now = time.time() if now is None else now
         ev = None
         if self.state in ("working", "waiting"):
+            if self.turn_started_at is not None and \
+                    now - self.turn_started_at \
+                    < self.AGENT_FLICKER_GRACE_S:
+                # Detection flicker (the agent name / presence
+                # blinking between snapshots seconds into a
+                # turn) is not an ending: a live prime turn was
+                # closed at 0 s ten times this way, arming a
+                # fake DONE while its subagents still ran.
+                return None
             ev = self.note_agent_gone(now)
         self.agent = agent
         if self.state not in ("finished", "failed"):

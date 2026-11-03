@@ -75,3 +75,11 @@ bulb button in the app (announced, not filed).
   the environment lacks something, say so and stop.
 - One deliverable per run. A second idea goes in the report as
   a suggestion, not another file.
+- News and idea JSON cards carry a `"visual"` field: set
+  `"kind"` to the shape that describes THIS card's story —
+  `sections` (one part changes, the rest stays), `convert`
+  (one representation becomes another), `music`, `blueprint`
+  (an idea: route to a target, first step below), `release`
+  (the story is a version/number), or `auto` to let the app
+  derive it from your words. Never ship the generic headline
+  look for a story one of these describes.
