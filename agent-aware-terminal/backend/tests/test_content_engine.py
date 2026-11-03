@@ -168,6 +168,27 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class SingleCardCycleTests(unittest.TestCase):
+    def test_single_card_pool_cycles_back_to_the_same_card(self):
+        # Live incident: a project with exactly one idea —
+        # flipping past it showed the end card and spawned a
+        # creator for a NEW idea; the existing one looked lost.
+        # The engine side of the fix: a one-card pool cycles
+        # straight back to that card.
+        with tempfile.TemporaryDirectory() as tmp:
+            pathlib.Path(tmp, "only.json").write_text(json.dumps({
+                "type": "idea", "id": "only-idea",
+                "title": "The one idea", "body": "b",
+                "action_hint": "do it"}))
+            engine = ce.ContentEngine([tmp], seed=3)
+            engine.set_type_filter({"idea"})
+            first = engine.next_game()
+            self.assertEqual(first["id"], "only-idea")
+            again = engine.next_game()
+            self.assertIsNotNone(again)
+            self.assertEqual(again["id"], "only-idea")
+
+
 class NoRepeatCycleTests(unittest.TestCase):
     def test_full_cycle_without_repeats_then_resets(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -146,6 +146,13 @@ def with_card_visual(pack: dict) -> dict:
     paint): synthesize a visual that describes the card itself.
     Packs with their own visual, and every other type, pass
     through untouched; the input dict is never mutated."""
+    if resolve_type(pack) == "pr" and not pack.get("scene"):
+        return {**pack, "scene": {
+            "type": "pr",
+            "anim": {"type": "cardvisual", "speed": 0.12},
+            "visual": {"number": pack.get("number"),
+                       "components": pack.get("components") or [],
+                       "files": pack.get("changed_files") or 0}}}
     if resolve_type(pack) not in ("news", "idea") \
             or pack.get("scene") or callable(pack.get("_paint")):
         return pack
@@ -498,7 +505,7 @@ def paint_scene(cr, pack, w: float, h: float, colors: dict,
             cr.move_to(mx, h * 0.96)
             cr.show_text(label.upper())
     elif stype in ("sections", "convert", "music", "blueprint",
-                   "release"):
+                   "release", "pr"):
         # Content-describing visuals for news/idea cards. All
         # labels come from the pack itself (scene.visual, filled
         # by visual_params from the pack's own words); geometry
@@ -528,7 +535,74 @@ def paint_scene(cr, pack, w: float, h: float, colors: dict,
             if kws:
                 _mono(" ".join(kws), mx, h * 0.14, alpha=0.55)
 
-        if stype == "sections":
+        if stype == "pr":
+            # The story: a pull request and the components it
+            # touches. Component boxes (name · files changed,
+            # both from gh + the project index), a central PR
+            # node, a dot travelling the lines.
+            comps = (vis.get("components") or [])[:4]
+            cx, cy = w / 2, h * 0.44
+            nw, nh = 128.0, 52.0
+            rr(cx - nw / 2, cy - nh / 2, nw, nh, 10)
+            cr.set_source_rgba(*text, 0.92)
+            cr.fill()
+            cr.select_font_face("JetBrains Mono", 0, 1)
+            cr.set_font_size(15)
+            cr.set_source_rgba(*bg, 1)
+            label = f"PR #{vis.get('number') or '?'}"
+            ext = cr.text_extents(label)
+            cr.move_to(cx - ext.width / 2, cy + 5)
+            cr.show_text(label)
+            cr.select_font_face("JetBrains Mono", 0, 0)
+            cr.set_font_size(10.5)
+            cr.set_source_rgba(*muted, 0.9)
+            stats = (f"+{pack.get('additions') or 0} "
+                     f"-{pack.get('deletions') or 0} · "
+                     f"{vis.get('files') or 0} files")
+            ext = cr.text_extents(stats)
+            cr.move_to(cx - ext.width / 2, cy + nh / 2 + 18)
+            cr.show_text(stats)
+            if not comps:
+                _mono("no component map for the changed files",
+                      mx, cy + nh / 2 + 38, alpha=0.6)
+            slots = [(mx, h * 0.20), (mx + max_w - 190, h * 0.20),
+                     (mx, h * 0.66), (mx + max_w - 190, h * 0.66)]
+            for (bx, by), comp in zip(slots, comps):
+                bw_, bh_ = 190.0, 44.0
+                rr(bx, by, bw_, bh_, 8)
+                cr.set_source_rgba(*bg, 1)
+                cr.fill_preserve()
+                cr.set_source_rgba(*text, 0.6)
+                cr.set_line_width(1.2)
+                cr.stroke()
+                cr.move_to(cx, cy)
+                tx = bx + (bw_ if bx < cx else 0)
+                cr.line_to(tx, by + bh_ / 2)
+                cr.set_source_rgba(*muted, 0.4)
+                cr.set_line_width(1.0)
+                cr.stroke()
+                frac = (t * 0.3 + (bx + by) % 1.0) % 1.0
+                dx = cx + (tx - cx) * frac
+                dy = cy + (by + bh_ / 2 - cy) * frac
+                cr.rectangle(dx - 3.5, dy - 3.5, 7, 7)
+                cr.set_source_rgba(*strong, 0.9)
+                cr.fill()
+                cr.select_font_face("JetBrains Mono", 0, 1)
+                cr.set_font_size(11)
+                cr.set_source_rgba(*text, 0.9)
+                cr.move_to(bx + 10, by + 19)
+                cr.show_text(str(comp.get("name") or "?")[:22])
+                cr.select_font_face("JetBrains Mono", 0, 0)
+                cr.set_font_size(10)
+                cr.set_source_rgba(*muted, 0.85)
+                cr.move_to(bx + 10, by + 35)
+                cr.show_text(f"{comp.get('files') or 0} files")
+            branches = " -> ".join(
+                x for x in (pack.get("head"), pack.get("base")) if x)
+            if branches:
+                _mono(branches, mx, h * 0.90)
+            _caption()
+        elif stype == "sections":
             # The story: one section is rewritten, the rest of
             # the song/document stays exactly as it was.
             n, gap = 5, 10.0
@@ -970,6 +1044,19 @@ class ContentEngine:
         base = str(Path(self.project_dir))
         return [p for p in self.packs_for(types)
                 if str(p.get("_source") or "").startswith(base)]
+
+    def set_live_packs(self, packs) -> None:
+        """Replace the live packs (pull requests) in the pool.
+
+        Live packs are not catalogue files: they are re-read
+        from the project's GitHub remote and re-injected. They
+        join the same deck and the same seen bookkeeping as
+        every other card."""
+        packs = list(packs)
+        self.packs = [p for p in self.packs
+                      if resolve_type(p) != "pr"] + packs
+        self.deck = [p for p in self.deck
+                     if resolve_type(p) != "pr"] + packs
 
     def set_project_dir(self, new_dir) -> bool:
         """Re-point the project content directory (the terminal

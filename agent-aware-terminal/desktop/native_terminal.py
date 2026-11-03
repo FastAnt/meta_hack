@@ -1937,12 +1937,13 @@ MODE_CAPTIONS = {
 
 # The content pane's quick filters. `game` is the pack type behind
 # the user-facing "Quiz" chip; "all" is the unfiltered deck.
-CONTENT_FILTERS = ("all", "news", "fact", "game", "idea")
+CONTENT_FILTERS = ("all", "news", "fact", "game", "idea", "pr")
 CONTENT_FILTER_LABELS = {"all": "All", "news": "News",
                          "fact": "Facts", "game": "Quiz",
-                         "idea": "Ideas"}
+                         "idea": "Ideas", "pr": "PRs"}
 CONTENT_TYPE_UNITS = {"news": "news items", "fact": "facts",
-                      "game": "quizzes", "idea": "ideas"}
+                      "game": "quizzes", "idea": "ideas",
+                      "pr": "pull requests"}
 
 
 def content_filter_types(key: str):
@@ -2652,6 +2653,7 @@ def run_gui(project_arg: str | None) -> int:
         or str(ensure_demo_project())
     core = Core(project_path)
     from backend.app import content_engine as ce
+    from backend.app import pr_pool
     from backend.app.content_engine import (ContentEngine,
                                             default_content_dirs)
     _content_dirs = default_content_dirs(DATA_DIR, RES_ROOT,
@@ -3025,6 +3027,8 @@ def run_gui(project_arg: str | None) -> int:
                "_surf_busy": False, "_surf_busy_end": None,
                "_surf_popup_gen": 0,
                "_creator_mode": "one", "_creator_auto_at": 0.0,
+               "_pr_fetching": False, "_pr_fetched_at": 0.0,
+               "_pr_note": "",
                "content_filter": _initial_filter,
                "content_trail": [], "content_pos": -1,
                "_page_at": 0.0, "_scroll_acc": 0.0,
@@ -4109,8 +4113,18 @@ def run_gui(project_arg: str | None) -> int:
         S["btn_empty_back"].connect(
             "clicked", lambda *_: show_terminal())
         empty_box.pack_start(S["btn_empty_back"], False, False, 6)
-        S["game_empty"] = empty_box
-        content.pack_start(empty_box, True, False, 0)
+        # The empty/end state needs its own event window: a
+        # plain Box receives no scroll events, so wheel/swipe
+        # paging died exactly there (only Down and the Next
+        # button worked). An EventBox wrapper gives the empty
+        # state the same scroll path as a card.
+        empty_wrap = Gtk.EventBox()
+        empty_wrap.add_events(Gdk.EventMask.SCROLL_MASK
+                              | Gdk.EventMask.SMOOTH_SCROLL_MASK)
+        empty_wrap.add(empty_box)
+        empty_wrap.connect("scroll-event", on_content_scroll)
+        S["game_empty"] = empty_wrap
+        content.pack_start(empty_wrap, True, False, 0)
         # Shorts-like paging: wheel / two-finger scroll at an edge and
         # touch swipes move vertically through the deck.
         game_scroll.connect("scroll-event", on_content_scroll)
@@ -4523,6 +4537,27 @@ def run_gui(project_arg: str | None) -> int:
         overlay.add_overlay(surf_popup)
 
         win.connect("key-press-event", on_key)
+
+        def _win_scroll_fallback(_win, event):
+            # At the end/empty state the card scroll is hidden
+            # and the empty area has no event window of its own:
+            # scroll events land on the main window and never
+            # reach the pane handlers. Catch them here, only
+            # for that state and only over the left pane.
+            if not S.get("at_end") or S.get("panel_on"):
+                return False
+            try:
+                px, py = _win.get_pointer()
+                alloc = S["left_stack"].get_allocation()
+                ox, oy = S["left_stack"].translate_coordinates(
+                    _win, 0, 0)
+            except Exception:
+                return False
+            if ox is None or not (ox <= px < ox + alloc.width
+                                  and oy <= py < oy + alloc.height):
+                return False
+            return on_content_scroll(_win, event)
+        win.connect("scroll-event", _win_scroll_fallback)
         win.show_all()
         scene.set_visible(False)
         panel.set_visible(False)
@@ -4895,12 +4930,90 @@ def run_gui(project_arg: str | None) -> int:
         S["empty_fb"].set_text(note)
 
     def _empty_copy(kind: str):
+        if kind == "pr":
+            return _pr_empty_copy()
         noun = {"news": "news item", "fact": "fact card",
                 "game": "quiz", "idea": "idea"}.get(kind, "card")
         return (f"No {CONTENT_TYPE_UNITS.get(kind, 'content')} yet",
                 "The researcher agent can create the first "
                 f"{noun} for this project. It will appear here "
                 "when it is ready.")
+
+    def _pr_empty_copy():
+        if S.get("_pr_fetching"):
+            return ("Loading pull requests…",
+                    "Reading the open pull requests of this "
+                    "project's GitHub remote.")
+        note = S.get("_pr_note") or ""
+        reasons = {
+            "not-a-git-repo": "This project is not a git "
+                              "repository, so there is no remote "
+                              "to read pull requests from.",
+            "gh-missing": "The gh CLI is not installed, so "
+                          "pull requests cannot be read.",
+        }
+        if note in reasons:
+            return ("No pull requests to show", reasons[note])
+        if note.startswith("gh-failed"):
+            return ("Pull requests unavailable",
+                    f"gh could not read them ({note[11:]}). "
+                    "Check `gh auth status`.")
+        return ("No open pull requests",
+                "This project's GitHub remote has no open pull "
+                "requests right now. PRs appear here as they "
+                "are opened.")
+
+    def _kick_pr_fetch():
+        """Read the open PRs off the UI thread (gh can take
+        seconds); results land in _pr_fetched."""
+        if S.get("_pr_fetching"):
+            return
+        if time.time() - S.get("_pr_fetched_at", 0) < 300 \
+                and engine.packs_for({"pr"}):
+            return
+        S["_pr_fetching"] = True
+        root = core._work_root()
+
+        def _work():
+            packs, err = pr_pool.fetch_pull_requests(root)
+            GLib.idle_add(_pr_fetched, packs, err)
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _pr_fetched(packs, err):
+        S["_pr_fetching"] = False
+        S["_pr_fetched_at"] = time.time()
+        S["_pr_note"] = err or ""
+        if err:
+            core.dlog("content", f"PR pool: {err}")
+            packs = []
+        else:
+            # Which component does each PR touch? Measured:
+            # changed files mapped through the project index.
+            from backend.app.project_indexer import \
+                component_for_file
+            for pack in packs:
+                counts: dict = {}
+                for path in pack.get("files") or []:
+                    comp = component_for_file(core.project, path) \
+                        if core.project else None
+                    name = comp["name"] if comp else \
+                        (path.split("/")[0] if "/" in path
+                         else "(root)")
+                    counts[name] = counts.get(name, 0) + 1
+                pack["components"] = [
+                    {"name": n, "files": c}
+                    for n, c in sorted(
+                        counts.items(), key=lambda kv: -kv[1])]
+            core.dlog("content",
+                      f"PR pool: {len(packs)} open pull requests")
+        engine.set_live_packs(packs)
+        _sync_filter_chips()
+        if S.get("content_filter") == "pr" and _content_visible():
+            if packs:
+                serve_game(True)
+            else:
+                _show_empty(*_pr_empty_copy())
+        return False
 
     def _offer_creation(kind: str):
         """An empty filter is a request to create that content."""
@@ -4938,12 +5051,19 @@ def run_gui(project_arg: str | None) -> int:
         kind = S.get("content_filter", "all")
         total = len(engine.packs_for())
         noun = CONTENT_TYPE_UNITS.get(kind, "cards")
-        _show_empty(
-            "That's everything \u2014 for now",
-            f"All {total} {noun} available here have been "
-            "shown. New cards are written for this project by "
-            "the researcher \u2014 or press Next to start this "
-            "deck over.")
+        if kind == "pr":
+            _show_empty(
+                "That's everything \u2014 for now",
+                f"All {total} {noun} have been shown. New ones "
+                "appear here as they are opened \u2014 or press "
+                "Next to start this deck over.")
+        else:
+            _show_empty(
+                "That's everything \u2014 for now",
+                f"All {total} {noun} available here have been "
+                "shown. New cards are written for this project by "
+                "the researcher \u2014 or press Next to start this "
+                "deck over.")
         S["at_end"] = True
         S["game_next"].set_label("\u21ba From the top")
         S["game_next"].show()
@@ -4951,7 +5071,12 @@ def run_gui(project_arg: str | None) -> int:
         core.dlog("content",
                   f"deck exhausted ({kind}: {total} seen)")
         if kind in ("news", "idea") and not _tour_raw \
-                and S.get("_creator_mode") != "off":
+                and S.get("_creator_mode") != "off" \
+                and S.get("_exhaust_asked") != (kind, total):
+            # Ask for more at most once per pool size: flipping
+            # at the end card must not spawn a fresh creator
+            # (and a fresh card) every time.
+            S["_exhaust_asked"] = (kind, total)
             ok = spawn_creator(kind, core._work_root(),
                                f"deck-exhausted-{kind}")
             if ok:
@@ -4971,6 +5096,11 @@ def run_gui(project_arg: str | None) -> int:
             return
         active = S.get("content_filter", "all")
         if key == active:
+            if key == "pr":
+                _kick_pr_fetch()
+                if serve and not engine.packs_for():
+                    _show_empty(*_pr_empty_copy())
+                return
             if serve and not engine.packs_for():
                 _offer_creation(key)
             return
@@ -4988,7 +5118,15 @@ def run_gui(project_arg: str | None) -> int:
                   f"({available} packs)")
         if not serve:
             return
-        if available == 0:
+        if key == "pr":
+            # Pull requests are read live, never created by the
+            # researcher: fetch, and show the loading/empty copy
+            # until they land.
+            _kick_pr_fetch()
+            if available == 0:
+                _show_empty(*_pr_empty_copy())
+                return
+        elif available == 0:
             _offer_creation(key)
             return
         serve_game(True)
@@ -5136,6 +5274,14 @@ def run_gui(project_arg: str | None) -> int:
         trail = S.setdefault("content_trail", [])
         pos = S.get("content_pos", -1)
         game = None
+        if advance and step > 0 and S.get("at_end"):
+            # Advancing from the end card (Next button, Down
+            # key, swipe — all of them) starts the deck over:
+            # the pool cycles and the cards come back. Only the
+            # button used to do this; a swipe left the user
+            # staring at the end card while a creator spawned
+            # replacements, and the existing cards looked lost.
+            S["_replay_ok"] = True
         if not advance:
             game = engine.current()
             if game is not None:
@@ -5208,7 +5354,13 @@ def run_gui(project_arg: str | None) -> int:
     def _page_step(step: int):
         if not _content_visible():
             return
-        if S["game_ctl"].get("game") is None:
+        if S["game_ctl"].get("game") is None \
+                and not S.get("at_end"):
+            # No card and no end card: nothing to page from.
+            # The end card MUST page (serve_game cycles the
+            # deck there) — this guard used to strand Down-key
+            # and swipe users on it while only the Next button
+            # worked.
             return
         now = time.time()
         if now - S.get("_page_at", 0.0) < 0.35:
@@ -5221,7 +5373,9 @@ def run_gui(project_arg: str | None) -> int:
 
     def on_content_scroll(_widget, event):
         """Wheel / two-finger swipe: page at the edges, scroll inside."""
-        if not _content_visible() or S["game_ctl"].get("game") is None:
+        if not _content_visible() or (
+                S["game_ctl"].get("game") is None
+                and not S.get("at_end")):
             return False
         if event.state & (Gdk.ModifierType.CONTROL_MASK
                           | Gdk.ModifierType.SHIFT_MASK
@@ -5284,24 +5438,11 @@ def run_gui(project_arg: str | None) -> int:
         if not engine._served and vstore.serve_count() == 0:
             S["set_reset_fb"].set_text("Nothing has been watched yet.")
             return
-        if not S.get("_reset_armed"):
-            S["_reset_armed"] = True
-            S["set_reset"].set_label("Click again to reset")
-            S["set_reset_fb"].set_text(
-                "This clears the watched deck; likes are kept.")
-
-            def _disarm():
-                if S.get("_reset_armed"):
-                    S["_reset_armed"] = False
-                    S["set_reset"].set_label(
-                        "Reset watched history")
-                    S["set_reset_fb"].set_text("")
-                return False
-
-            GLib.timeout_add_seconds(6, _disarm)
-            return
-        S["_reset_armed"] = False
-        S["set_reset"].set_label("Reset watched history")
+        # One click, immediate effect. The old two-click arm
+        # ("Click again to reset", disarming after 6 s) read as
+        # a reset that silently never happened — and even a
+        # successful reset left the end card on screen, so the
+        # revived deck never appeared until Next was pressed.
         _close_previous_serve()
         n = engine.reset_history()
         try:
@@ -5328,6 +5469,9 @@ def run_gui(project_arg: str | None) -> int:
         core.dlog("content",
                   f"watched history reset ({n} packs unseen, "
                   f"{rows} serve rows cleared)")
+        # Show the effect: serve the first revived card at once.
+        if _content_visible():
+            serve_game(advance=True)
 
     def draw_bulb(area, cr):
         # A lightbulb stroked in the text colour — monochrome
@@ -5375,8 +5519,10 @@ def run_gui(project_arg: str | None) -> int:
         # All, random (TODO: weight by the project domain and what
         # the user actually answers/saves).
         active = S.get("content_filter", "all")
-        if active != "all":
+        if active not in ("all", "pr"):
             return active
+        # PRs are read, not generated: the bulb makes real
+        # content even while the PR chip is up.
         import random
         return random.choice(["game", "fact", "news", "idea"])
 
@@ -6141,6 +6287,17 @@ def run_gui(project_arg: str | None) -> int:
                              daemon=True).start()
             core.dlog("content", "project content base now "
                                  f"{root}")
+            if _content_visible():
+                # Project cards live in each project's own
+                # .aat/content: say out loud that the deck just
+                # changed project, or cards from the previous
+                # project look deleted when they are only
+                # out of scope here.
+                _set_content_note(
+                    f"Project changed \u2014 this pane now "
+                    f"follows {Path(root).name}. Its project "
+                    "cards are its own; the previous project's "
+                    "cards stay in its .aat/content.")
 
     def _capture_screen_image(text):
         """A screenshot of the TERMINAL part only (never the

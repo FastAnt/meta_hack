@@ -186,8 +186,8 @@ The deck never repeats until every pack has been served
 visual** authored for it — reused scene skeletons fail the
 test suite (`FactBespokeVisualTests`).
 
-The Feed header carries **All / News / Facts / Quiz / Ideas**
-chips (single choice; All by default). A runtime filter is a
+The Feed header carries **All / News / Facts / Quiz / Ideas /
+PRs** chips (single choice; All by default). A runtime filter is a
 view over the same catalogue (`ContentEngine.set_type_filter`):
 it changes neither the vector index nor the persisted deck and
 it also bounds `content_selector.pick`, so a filtered pane never
@@ -195,6 +195,28 @@ serves another type. Choosing a type with no packs is a
 generation trigger: the pane shows the empty state and spawns
 the researcher with that `want_type`; the deposit is served the
 moment it lands.
+
+A sixth chip, **PRs**, is live data rather than content:
+`backend/app/pr_pool.py` reads the current project's open
+GitHub pull requests with `gh` (in a worker thread) and injects
+them as cards (`ContentEngine.set_live_packs`) — description,
+changed files mapped to project components, comment/review
+counts and the latest discussion excerpt, all measured from
+gh's JSON. The visual is a component diagram (PR node, touched
+components with file counts, `head -> base`, +/− lines) and
+the card's Open link goes to the PR. A project with no git
+remote, no `gh`, or no open PRs gets an empty state that says
+which. The watched-history reset is one click and serves the
+first revived card immediately (its predecessor's two-click
+arm silently read as a reset that never happened). Advancing
+from the end card — Next button, Down key or swipe alike —
+cycles the deck from the top (a one-card pool serves its card
+again); asking the researcher for more happens at most once
+per pool size, so flipping at the end cannot spawn endless
+replacements while the existing cards look lost. Project
+cards are per-project: when the terminal's project changes,
+the pane says so, because the previous project's cards are
+out of scope, not deleted.
 
 Paging is Shorts-like. `serve_game` keeps a per-session trail:
 Next picks a new contextual pack at the tail and steps forward
