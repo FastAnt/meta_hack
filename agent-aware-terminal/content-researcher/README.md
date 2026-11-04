@@ -46,14 +46,21 @@ on the project may enjoy (and review) the games later.
 4. The terminal app loads `.aat/content/` with top priority, so
    the new game appears in the pane for that project.
 
-## Deliberately not here (yet)
+## Launching and scope
 
-- Automatically installing/launching the creator agent and
-  injecting its keys. The operator runs the agent; keys come
-  from the environment (`keys.sh` is the operator's file — this
-  component never reads, prints or stores key values).
-- Writing production code. Ever. The researcher's write access
-  is `.aat/` by contract, and its skills say so.
+The app can launch this researcher from the bulb button, an empty content
+category, or an eligible project-content request. The bulb selects one card,
+continuous creation (up to ten unread project cards), or off. The profiler and
+CLI also support the manual flow above.
+
+Install and authenticate the creator separately. Muse is the default provider;
+Settings also supports Codex, Kilo, custom commands, and a model endpoint through
+the built-in harness. See the [application guide](../README.md).
+
+The researcher must write only into `<project>/.aat/` and never edit production
+code. This is a contract in the creator instructions; the default Muse launch
+uses `--yolo`, so it is not an OS sandbox. Review generated packs before sharing
+or running them. The built-in LLM harness additionally checks file-write paths.
 
 Code: `backend/app/content_researcher.py` (profiler, lifecycle),
 `tools/content_researcher.py` (CLI). Skills: `SKILL.md` (main),

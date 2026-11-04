@@ -7,3 +7,6 @@ __pycache__/
 .archify/*/*.browser-check.json
 .archify/*/*.delivery.json
 keys.sh
+
+# Local hackathon slides are intentionally not published.
+/agent-aware-terminal/presentation/

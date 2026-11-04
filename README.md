@@ -1,114 +1,152 @@
-# meta_hack — Agent-Aware Terminal
+# Fancy Terminal
 
-A hackathon project built for the Meta Muse hackathon: a Linux terminal
-that **understands when an AI coding agent is working inside it** and turns
-the waiting time into an interactive, living map of your project.
+**A terminal that keeps your project close while your coding agent works.**
 
-## Documentation
+Fancy Terminal (Agent-Aware Terminal in the code) is a native Linux terminal
+built for the Meta hackathon. It pairs your coding agent with a compact activity
+indicator and an optional feed of content about your repository: facts, quizzes,
+ideas, news, and open pull requests.
 
-- **`AGENTS.md`** — agent quickstart: read order, task routing,
-  commands, hard rules. Start here if you are an agent.
-- **`ARCHITECTURE.md`** — full architecture: runtime pipeline,
-  content system, contextual selection, data layout, git flow.
+[Watch the 3-minute demo](https://youtu.be/8p3r9JF1y6k) ·
+[Setup and usage](agent-aware-terminal/README.md) ·
+[Architecture](ARCHITECTURE.md)
 
-## The idea
+![Fancy Terminal: a fact card beside the agent activity indicator, light theme](agent-aware-terminal/docs/assets/feed-light.png)
 
-When a coding agent (here: **Muse**) works autonomously for minutes —
-reading files, editing code, running tests — a regular terminal degrades
-into an opaque `Working...`. The user loses the thread, alt-tabs away, and
-then pays a context-rebuild cost when the agent finishes or needs them.
+*Captured from the built application using its content-tour mode. The activity
+indicator is a simulated working state; this is a UI preview, not a live agent run.*
 
-**Agent-Aware Terminal keeps the user in the loop without stealing the
-terminal.** It is a plain, full-power terminal (GTK + VTE — bash, vim,
-tmux, ssh all work as usual) with a calm visual layer on top of it:
+## Why
 
-- the overlay **opens by itself** when the agent has been working for a
-  while, and closes back to the console in one keystroke;
-- it shows **what the agent is doing right now as one animated square**
-  in the center of the screen — blinking when idle, glitching when
-  searching the codebase, trailing when searching the web, shuffling
-  when it needs you (click it and you are back in the terminal),
-  flashing color while thinking, building up block by block while
-  writing code;
-- the surface is minimal and follows the **system theme** (dark/light)
-  with grotesk typography — no generated imagery in the UI;
-- the Muse Image / Muse Spark pipelines (project worlds, session
-  posters, explanations, quizzes) run in the backend and return to the
-  UI with the next, data-rich design iteration;
-- the overlay opens only when a **System-1 decision model (Liquid AI
-  d1.1)** predicts the task will run autonomously for more than ~20 s —
-  and when the agent finishes, three small squares summarize the run:
-  files changed (real git diff, green/red), task completeness (1–5
-  score), and change safety (1–5 score).
+While an agent reads files, edits code, or runs tests, the developer has a gap
+in their workflow. Watching terminal output can be tedious; switching to an
+unrelated feed can make it harder to pick up the task again.
 
-The core product principle: **AI draws, code tells the truth.** Generated
-images never carry text, numbers, or diagrams — every fact on screen
-(components, connections, files, statistics) is computed deterministically
-from a real index of the project. The AI provides atmosphere and
-explanations; the code provides facts.
+Fancy Terminal explores a simple idea: make that waiting time connected to the
+project. Open a short card, explore a relevant idea, or catch up on a pull
+request, with the agent's activity still visible beside it. The prototype's
+benefit to attention and task resumption has not yet been measured in a user study.
 
-A second principle, straight from the spec: **observation is separated
-from inference.** OS facts from `/proc` (`source=observed`), heuristics
-(`source=heuristic`, with confidence), and true agent events from the
-agent's own session log (`source=agent_event`) are never mixed.
+## What it does
 
-## What is implemented
+- **A real terminal.** GTK 3 + VTE, with your existing shell and coding-agent CLI.
+  No browser UI, WebKit, or local web server.
+- **An agent activity indicator.** One animated square represents thinking,
+  searching, editing, testing, completion, or a request for your input.
+- **An optional context feed.** Press `Alt+I` to browse project-related content.
+  The busy-state hint does not take keyboard focus or open the feed automatically.
+  Press `Esc` or click the agent square to return.
+- **Project-aware content creation.** A separate researcher studies the repository
+  and the current task, then creates cards in `<project>/.aat/content/`.
+- **Live pull requests.** The PRs category reads open PRs through the GitHub CLI,
+  including changed files, discussion excerpts, and links to the original PRs.
+- **Measured changes and labelled judgments.** File counts come from filesystem
+  snapshots. DONE and SAFE scores are model judgments with confidence, not proof
+  of correctness or a security audit.
 
-All four phases of the [spec](meta_hack/agent_aware_terminal_tz_v0_2.md)
-as one working vertical slice:
+![Fancy Terminal: the same content-feed layout in dark theme](agent-aware-terminal/docs/assets/feed-dark.png)
 
-1. **Terminal + overlay** — a real VTE terminal; a native GTK overlay on
-   `Ctrl+Shift+O`. No web pages, no WebKit, no localhost: the app is a
-   single native binary.
-2. **Session awareness** — a `/proc` observer: foreground process, cwd,
-   process tree, agent-CLI detection, command lifecycle.
-3. **Agent awareness** — a Muse adapter that tails Muse's replayable
-   JSONL session logs and normalizes them into the spec's event contract
-   (state, tool, files, plan, approval waits, subagents); overlay
-   auto-show with an anti-flicker threshold.
-4. **Project awareness** — a project indexer (components and
-   import-derived connections), deterministic fact cards, Muse Spark
-   explanations + quiz, card saving, Muse Image worlds and posters
-   (generated and cached; their display is the next design iteration —
-   the shipped overlay is the minimal agent square).
+*Dark-theme preview, also captured in content-tour mode with a simulated activity state.*
 
-Verified end-to-end on a live machine: a real `muse` run edited the demo
-project's README and ran its tests while the overlay tracked it; Muse
-Image worlds/posters and Spark cards were generated through the Meta
-Model API; 9 backend unit tests pass.
+## Models and their roles
+
+Meta's models are the brains behind project-specific content creation. Wonder
+was used for development and content creation, and Meta Image for visual
+experiments. The researcher integration currently invokes the `muse` CLI by
+default; other creator providers can be configured in Settings.
+
+Liquid AI's **System-1 (d1.1)** provides fast, bounded judgments: interpreting
+terminal screenshots and text, choosing relevant content, and scoring completed
+turns. A local vector index retrieves content candidates before selection.
+Without a Liquid key, the app falls back to process/log-based observation and
+retrieval ranking; model-based scores stay off.
+
+The repository also retains Meta text/image experiments. Generated project worlds
+and posters are **not displayed in the current interface**.
+
+A future research direction is to explore a CLM approach using Glimmer's encoder
+as the basis for a System-1-style decision layer. This is an experiment we want
+to pursue, not a feature of the current prototype.
 
 ## Quick start
 
+On Ubuntu / Debian, install the system bindings and clone the content submodule:
+
 ```bash
-export MODEL_API_KEY="LLM|..."        # Meta Model API key (dev.meta.ai)
-agent-aware-terminal/dist/agent-aware-terminal/agent-aware-terminal
+sudo apt install git python3-gi python3-gi-cairo python3-requests \
+    gir1.2-gtk-3.0 gir1.2-vte-2.91
+git clone --recurse-submodules https://github.com/FastAnt/meta_hack.git
+cd meta_hack/agent-aware-terminal
+./run.sh --project ~/dev/my-project
 ```
 
-Or from sources: `agent-aware-terminal/run.sh`. Rebuild the binary:
-`agent-aware-terminal/build-binary.sh`. Details, the 90-second demo
-script, and known limitations: [agent-aware-terminal/README.md](agent-aware-terminal/README.md).
+Already cloned? Run `git submodule update --init --recursive` from the repository
+root. The content catalogue is a separate repository under `games-base/`.
 
-## Architecture
+The terminal and catalogue work without API keys. For model features, create a
+local `agent-aware-terminal/keys.sh` using your own credentials:
 
-![Architecture](agent-aware-terminal/docs/assets/architecture.png)
+```bash
+export MODEL_API_KEY="YOUR_META_API_KEY"
+export SYSTEM_1_MODEL_API_KEY="YOUR_LIQUID_API_KEY"
+```
 
-Explorable diagram with links into the source:
-[`.archify/architecture-agent-aware-terminal-20261031-1240/agent-aware-terminal.html`](.archify/architecture-agent-aware-terminal-20261031-1240/agent-aware-terminal.html)
-(open in a browser; export to PNG/SVG from its menu).
+This file is git-ignored; never commit it. The app loads it automatically, and
+existing environment variables take precedence. Creator CLIs must be installed
+and authenticated separately. For PR cards, install `gh` and run `gh auth login`.
 
-## Repository layout
+To build the application locally:
 
-| Path | What |
-|---|---|
-| `agent-aware-terminal/` | The application: native GTK+VTE terminal, overlay, Muse/Meta integration |
-| `agent-aware-terminal/backend/` | Python modules: Muse adapter, session observer, project indexer, cards, Meta client |
-| `agent-aware-terminal/desktop/` | The native app (`native_terminal.py`) and desktop installer |
-| `agent-aware-terminal/demo_project/` | Pulseboard — the toy project the agent works on in the demo |
-| `meta_hack/` | The original task spec (TZ v0.2) this was built against |
-| `.archify/` | The architecture diagram spec, HTML and PNG |
+```bash
+./build-binary.sh
+./dist/agent-aware-terminal/agent-aware-terminal --project ~/dev/my-project
+```
 
-## Credits
+The build bundles Python dependencies; it still needs a compatible Linux desktop
+and GTK/VTE libraries. See the [application guide](agent-aware-terminal/README.md)
+for configuration, keyboard shortcuts, and troubleshooting.
 
-Built with Meta's Muse family — **Muse** (the coding agent in the
-terminal), **Muse Spark** (explanations and quiz), **Muse Image 1.0**
-(project worlds and session posters) — via the Meta Model API.
+## Try the loop
+
+1. Open a project and start your coding agent inside the terminal.
+2. When the agent starts working, press `Alt+I` to open the feed.
+3. Browse **All / News / Facts / Quiz / Ideas / PRs** with the filter chips.
+4. Use the bulb button to create one card or keep a small pool of unread cards.
+5. When the agent needs input, return to the terminal. At completion, inspect
+   measured file changes and any available model scores.
+
+The view button cycles between terminal + visualization, feed + visualization,
+and terminal + feed. The theme button cycles Auto, Light, and Dark.
+
+## Development
+
+Create the virtual environment inside `agent-aware-terminal/`. System site
+packages are needed for the OS-provided GTK bindings:
+
+```bash
+cd agent-aware-terminal
+/usr/bin/python3 -m venv --system-site-packages .venv
+.venv/bin/pip install requests pycairo
+.venv/bin/python -m unittest discover -s backend/tests
+python3 tools/simulate.py sims/demo_run.jsonl
+```
+
+Run the unit suite without production API credentials in its environment;
+some legacy scenarios assume an unconfigured model client.
+
+| Path | Purpose |
+| --- | --- |
+| [desktop/native_terminal.py](agent-aware-terminal/desktop/native_terminal.py) | GTK/VTE interface and orchestration |
+| [backend/app/](agent-aware-terminal/backend/app/) | Observation, perception, content, retrieval, and PR services |
+| [backend/tests/](agent-aware-terminal/backend/tests/) | Unit and scenario tests |
+| [games-base/](agent-aware-terminal/games-base/) | External content catalogue, tracked as a submodule |
+| [content-researcher/](agent-aware-terminal/content-researcher/) | Researcher instructions, lifecycle, and templates |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Data flows, invariants, and implementation details |
+| [AGENTS.md](AGENTS.md) | Contributor and coding-agent instructions |
+
+## Prototype limits
+
+Linux is the current target. Screen-based state recognition can be wrong, and
+model scores require human review. Generated cards also need review for accuracy.
+The default Muse creator uses `--yolo`; its `.aat/` write scope is an instruction,
+not an OS sandbox. Use generation only in projects you trust and review its output.

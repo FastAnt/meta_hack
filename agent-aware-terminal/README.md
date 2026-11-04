@@ -1,438 +1,187 @@
-# Agent-Aware Terminal
+# Fancy Terminal — application guide
 
-**A terminal that understands an AI agent is working inside it — and turns
-waiting into an interactive map of your project.**
+The application is named Agent-Aware Terminal in source paths, configuration,
+and the binary. For the product overview and video, see the
+[repository README](../README.md).
 
-Muse works → Muse Spark explains → Muse Image draws → you stay in context.
+![Content feed and activity indicator in light theme](docs/assets/feed-light.png)
 
-![Overlay: the BUILD ON square on the dark theme surface](docs/assets/state-dark-working.png)
+*Built application, content-tour mode, simulated working indicator.*
 
-An implementation of phases 1–4 of the
-[spec v0.2](../meta_hack/agent_aware_terminal_tz_v0_2.md) as one working
-vertical slice, not four separate prototypes.
+## Install and run
 
----
-
-## Install
-
-Native Linux app (GTK 3 + VTE). No web pages, no WebKit, no local
-servers — it looks and behaves like an ordinary terminal.
-
-### 1. System packages
-
-Ubuntu / Debian:
+Linux with GTK 3 + VTE is required. On Ubuntu / Debian:
 
 ```bash
-sudo apt install git python3-gi python3-gi-cairo \
+sudo apt install git python3-gi python3-gi-cairo python3-requests \
     gir1.2-gtk-3.0 gir1.2-vte-2.91
-```
-
-Fedora: `sudo dnf install python3-gobject gtk3 vte291`.
-Python 3.11+ runs the sources; the release binary is self-contained.
-
-### 2. Clone (with the content submodule)
-
-```bash
 git clone --recurse-submodules https://github.com/FastAnt/meta_hack.git
 cd meta_hack/agent-aware-terminal
+./run.sh --project ~/dev/my-project
 ```
 
-Already cloned without submodules?
-`git submodule update --init` from the repo root — the games/facts
-catalogue lives in `games-base/`.
+`./run.sh` chooses a Python interpreter that can import PyGObject, preferring
+`.venv/bin/python`, then `/usr/bin/python3`. Python 3.11+ is required. If the
+catalogue is missing, run `git submodule update --init --recursive` at the repo root.
 
-### 3. Keys (optional, git-ignored)
+Without `--project`, the app opens its bundled demo project. You can also `cd`
+inside the terminal; the content pool follows the observed project directory.
+Project cards live in `<project>/.aat/content/`.
 
-Create `keys.sh` in this folder (never commit it; real environment
-variables win over the file):
-
-```bash
-export MODEL_API_KEY="LLM|..."            # Meta Model API (dev.meta.ai)
-export SYSTEM_1_MODEL_API_KEY="liquid_..."  # Liquid AI System-1 (d1.1)
-```
-
-Both are optional: with no Liquid key the app runs on measured
-process/screen heuristics only; with no keys at all the terminal,
-the status square and the built-in catalogue still work — the
-model-judged scores and image verdicts stay off.
-
-### 4. Run
-
-From sources:
-
-```bash
-./run.sh
-```
-
-Or build the standalone binary (creates `.venv-build/`, needs
-network once for pip):
+Build and run the packaged application:
 
 ```bash
 ./build-binary.sh
+./dist/agent-aware-terminal/agent-aware-terminal --project ~/dev/my-project
+```
+
+The build creates `.venv-build/`, bundles Python dependencies, and copies the
+external content catalogue and researcher instructions beside the binary.
+A compatible Linux desktop and GTK/VTE libraries are still required.
+`desktop/install-desktop.sh` installs a desktop launcher.
+
+## Credentials and providers
+
+The app works without model credentials: the terminal, catalogue, fallback
+observation, and measured file changes remain available. Model perception and
+DONE/SAFE judgments require a Liquid key.
+
+Create a local `keys.sh` in this directory if needed:
+
+```bash
+export MODEL_API_KEY="YOUR_META_API_KEY"
+export SYSTEM_1_MODEL_API_KEY="YOUR_LIQUID_API_KEY"
+```
+
+`LIQUID_API_KEY` is also accepted. `keys.sh` is git-ignored and must never be
+committed. Restrict access with `chmod 600 keys.sh`. The loader searches
+`$AAT_KEYS_FILE`, the working directory, the app's parent directories, its data
+directory, then `~/.config/agent-aware-terminal/keys.sh`. Existing environment
+variables take precedence.
+
+The content researcher is a separate agent. Settings supports Muse (default),
+Codex, Kilo, a custom command, or an OpenAI-compatible model endpoint. Install
+and authenticate your chosen CLI separately; the Meta API key alone does not
+install a creator. Relevant environment settings include:
+
+| Variable | Purpose |
+| --- | --- |
+| `AAT_CREATOR_PROVIDER` | `muse`, `codex`, `kilo`, `custom`, or `llm` |
+| `AAT_CREATOR_MODEL` | Model override for CLI providers |
+| `AAT_CREATOR_CMD` | Custom creator command |
+| `AAT_CREATOR_LLM_BASE_URL` | Base URL for the built-in model harness |
+| `AAT_CREATOR_LLM_API_KEY` | Credential for that endpoint |
+| `AAT_CREATOR_LLM_MODEL` | Model for that endpoint |
+| `AAT_CREATOR=off` | Disable creator launches |
+
+The Muse creator uses `muse exec --yolo`. Its mission restricts writes to `.aat/`,
+but that is not an OS-enforced sandbox. The built-in LLM harness checks its file
+write destinations; Python content packs and validators still execute code.
+Only load trusted content and review generated output.
+
+For live PR cards, install the GitHub CLI and authenticate with `gh auth login`.
+The current project must have a GitHub remote. Missing prerequisites or an empty
+PR pool produce an explanatory empty state.
+
+## Everyday workflow
+
+Start your coding agent inside the terminal. While it works, a small hint offers
+surf mode for four seconds without taking keyboard focus. The feed opens only
+when you choose it. Finished-turn results may open the visualization if enabled
+in Settings.
+
+| Control | Action |
+| --- | --- |
+| `Alt+I` | Toggle surf mode |
+| `Esc` | Close the current layer / return to the terminal |
+| Agent square | Return to the terminal from the feed |
+| View button | Cycle terminal + visualization, feed + visualization, terminal + feed |
+| Theme button | Cycle Auto, Light, Dark |
+| `Ctrl+Shift+O` | Toggle the visualization |
+| `↑` / `↓` | Previous / next card while the terminal is hidden |
+| Wheel / swipe | Browse cards; scroll long cards before paging |
+| `Shift+Enter` / `Alt+Enter` | Send a newline using kitty CSI-u to compatible agent TUIs |
+| `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy / paste |
+
+Filter chips select **All / News / Facts / Quiz / Ideas / PRs**. Reactions inform
+future ranking; the deck cycles when its current pool is exhausted. Settings →
+Watched content resets viewing history while keeping reactions.
+
+The bulb cycles **off → create one → create continuously**. Continuous creation
+pauses once the selected category has ten unread cards. Empty content categories
+can also trigger the researcher. Requests and lifecycle records live under
+`<project>/.aat/research/`.
+
+## How observation works
+
+With a Liquid key, the default `AAT_PERCEPTION=system1` path interprets terminal
+screenshots, screen text, and measured dynamics. A state machine smooths those
+judgments into working, waiting, and finished states. The Muse log adapter does
+not run in this mode.
+
+Without a key, or with `AAT_PERCEPTION=legacy`, observation uses process trees,
+commands, screen changes, and Muse logs where available. Agent support depends
+on process detection and the evidence exposed by each CLI.
+
+At the end of an observed turn:
+
+- **FILES** comes from a baseline snapshot and filesystem diff.
+- **DONE** and **SAFE** are model judgments on a 0–4 scale with confidence.
+- Replayed session history must not create a live completion or new scores.
+
+The activity indicator includes distinct modes for thinking, search, editing,
+builds, tests, approvals, questions, completion, and failure. It is an estimate
+of activity, not a guarantee that a task succeeded.
+
+## Content and model roles
+
+The content engine loads external Python packs and JSON cards. Project content
+gets priority; a local vector index retrieves candidates, and System-1 picks
+among them when available. Retrieval ranking is the fallback. Likes, dislikes,
+and viewing history affect later choices.
+
+Meta models support content creation through the researcher. Meta Image project
+worlds and session posters remain experimental backend paths; they are not shown
+in the current interface. See the [researcher guide](content-researcher/README.md)
+and [architecture](../ARCHITECTURE.md) for details.
+
+## Data and diagnostics
+
+Default app data: `~/.local/share/agent-aware-terminal/`.
+
+- `decisions.log`: state, perception, content, and scoring decisions.
+- `ui_prefs.json`: theme, view, and content-filter preferences.
+- `content_state.json`: catalogue viewing progress.
+- `content_index.db`: vectors, reactions, and serve history.
+- `<project>/.aat/`: project content and researcher records.
+
+`AAT_DATA_DIR` overrides the app data location. Test instances must use a unique
+`AAT_APP_ID=dev.meta.aat.<name>` and their own data directory. Close only the
+instance you launched; do not kill other terminal instances or change system
+keyboard/IBus settings.
+
+## Development and checks
+
+```bash
+/usr/bin/python3 -m venv --system-site-packages .venv
+.venv/bin/pip install requests pycairo
+.venv/bin/python -m unittest discover -s backend/tests
+python3 tools/simulate.py sims/demo_run.jsonl
+python3 tools/test_game.py <pack-or-directory>
+```
+
+Run unit tests without production API credentials: legacy scenarios assume an
+unconfigured model client. Use a separate `AAT_DATA_DIR` for test output.
+
+For a manual content preview from the built binary:
+
+```bash
+AAT_APP_ID=dev.meta.aat.preview AAT_DATA_DIR=/tmp/aat-preview \
+AAT_CREATOR=off AAT_TOUR=manual AAT_TOUR_TYPE=fact \
 ./dist/agent-aware-terminal/agent-aware-terminal
 ```
 
-Optional: `desktop/install-desktop.sh` adds a launcher icon.
-
-### 5. First run
-
-Open any project in the terminal and work as usual. Run your
-coding agent (`claude`, `codex`, `kilo`, …) *in this terminal*:
-the square on the right mirrors its state, content opens beside
-it while you wait, and a finished turn leaves a DONE with
-measured file counts and judged scores. `Ctrl+Shift+O` toggles
-the overlay; the bulb button asks the content researcher to
-generate project-specific news, ideas, facts and quizzes into
-`<project>/.aat/content`.
-
-Tests: `.venv/bin/python -m unittest discover -s backend/tests`
-(build the venv with `python3 -m venv .venv && .venv/bin/pip
-install requests pycairo` if missing).
-
----
-
-## Quick start
-
-This is a **regular terminal application**: GTK 3 + VTE, no web pages, no
-WebKit, no local servers. Run the binary:
-
-```bash
-export MODEL_API_KEY="LLM|..."   # Meta Model API key (dev.meta.ai)
-./dist/agent-aware-terminal/agent-aware-terminal
-```
-
-Or put the keys in a `keys.sh` file — the app loads it automatically at
-startup (real environment variables win). It searches `$AAT_KEYS_FILE`,
-`./keys.sh`, `keys.sh` next to the app (repo root / binary folder), then
-`~/.config/agent-aware-terminal/keys.sh`:
-
-```bash
-export MODEL_API_KEY="LLM|..."
-export SYSTEM_1_MODEL_API_KEY="liquid_..."   # Liquid AI, for the gate
-```
-
-`keys.sh` is git-ignored and must never be committed.
-
-A window opens that looks like an ordinary terminal: the shell is already
-in the demo project, with only a thin header bar holding the agent
-indicator and the Overlay button (`Ctrl+Shift+O`). From sources it is the
-same: `./run.sh`. Rebuild the binary with `./build-binary.sh`; install a
-launcher icon with `desktop/install-desktop.sh`. The demo project and app
-data live in `~/.local/share/agent-aware-terminal/`.
-
-![A plain terminal](docs/assets/native-terminal.png)
-
-Without a key the app still works: terminal, observation, the architecture
-model and deterministic cards are available; only image generation and
-Muse Spark explanations are not. The key is read **only** from the
-environment variable and is never stored anywhere.
-
-Requirements: Linux with GTK 3 + VTE (Ubuntu: `gir1.2-vte-2.91`),
-Python 3.11+ when running from sources, and `muse` (Muse) installed
-for the live scenario.
-
-## The 90-second demo
-
-1. Launch the binary — you are in a plain terminal inside the Pulseboard
-   project (`api / core / storage / ui / tests`).
-2. Menu ☰ → **"Run Muse with a task"** — a real Muse starts in
-   this same terminal.
-3. After a few seconds (the threshold is configurable) the overlay opens
-   by itself on top of the terminal: a single animated square in the
-   middle of the screen shows what the agent is doing (see the modes
-   below), with one human sentence underneath.
-4. If the agent needs you, the square shuffles — **click it and you are
-   back in the terminal** to answer.
-5. When the agent finishes, the square settles back to a calm blink.
-
-No Muse quota? Menu ☰ → **"Simulate events (dev)"**. History,
-diagnostics and settings live in menu ☰ → "History & diagnostics" (a side
-panel, not part of the main screen).
-
----
-
-## Design v2 — the agent square
-
-The overlay is deliberately almost empty. It follows the system theme
-(dark or light), uses a grotesk typeface (Inter, bundled with the app),
-hairline borders and pill buttons — no generated imagery, no dashboard.
-
-In the center sits **one square, ~30% of the window**, whose animation is
-the whole status display (in the spirit of FUI field-guide glyphs):
-
-| Mode | Animation | Meaning |
-|---|---|---|
-| `FLOAT` | a square levitating calmly, no caption | idle or no agent connected |
-| `GLITCH` | the square slices and jitters | searching the local system (files, code) |
-| `TRAIL` | the square moves, leaving a trail | searching the web |
-| `SHUFFLE` | four tiles keep swapping | the agent needs you — click the square to return to the terminal |
-| `COLOR FLASH` | the square slowly flashes color | thinking / planning |
-| `BUILD ON` | a 4×4 grid fills bottom-up | writing code or files, running builds/tests |
-
-Under the square: the mode name (mono, letterspaced), one human phrase
-("Writing code") and the current activity in one line. Nothing else. The
-mode is derived from the normalized agent event: `awaiting_user` →
-SHUFFLE, `planning` → COLOR FLASH, search/read tools → GLITCH, web tools
-→ TRAIL, edit/bash tools → BUILD ON, everything else → BLINKY.
-
-## When does the overlay open? A System-1 gate
-
-The overlay never opens just because time passed (an earlier build
-re-opened it every 280 ms after a manual close — that bug is fixed: a
-manual close is respected for the rest of the task, and clicking the
-square always returns to the terminal).
-
-Instead, a fast decision model decides. Once the user has given the agent
-a task and the agent has taken a couple of steps, the app asks
-**Liquid AI's d1.1 decision model** (`POST
-https://api.liquid.ai/decisions/v1/systemone`, a `noul` question —
-probability, zero generated tokens): *"Will the agent keep working
-autonomously for more than ~20 seconds?"* Only a "long" answer opens the
-overlay — once per task. A "short" answer is re-checked every 25 s (max
-4 times) as the work grows. Key: `LIQUID_API_KEY` (or
-`SYSTEM_1_MODEL_API_KEY`, e.g. from `keys.sh`); without one, a documented heuristic decides
-(plan ≥ 3 items, ≥ 4 steps, or ≥ 25 s elapsed) and the source is shown in
-Diagnostics.
-
-## After the run: three result squares
-
-When the agent finishes, the overlay shows what it did — three small
-squares under the main one:
-
-1. **FILES · n** — a grid with exactly one cell per modified file, from
-   the real `git diff --numstat` (untracked files count as added):
-   green where lines were mostly added, red where mostly removed.
-2. **DONE · x/4** — a fill square: how completely the task was done.
-   d1.1 scores the task + plan + final report + diff against a 5-level
-   rubric; the square fills to `score/4` and the caption shows the level
-   and the model confidence.
-3. **SAFE · x/4** — the same, for how safe the changes are for the
-   project and the system (deletions, scope, irreversibility, secrets,
-   verification), 5 levels from "dangerous" to "very safe".
-
-Without a Liquid key both scores fall back to transparent heuristics
-(plan completion ratio; deletion ratio and file count), labelled as such
-in Diagnostics.
-
-Two layouts: **overlay** (the visualization floats over the terminal)
-and **split screen** (header Split button or `Ctrl+Shift+S`) — terminal
-on the left, the same visualization on the right, 50/50 with a draggable
-divider. The System-1 gate drives both layouts equally.
-
-Input languages: the app forces the system IBus input method
-(`GTK_IM_MODULE=ibus` + the GTK `gtk-im-module` setting, set before the
-terminal widget exists) so keyboard-layout switching and IM languages
-work in the terminal like in any other GTK app. The active method is
-shown in Diagnostics.
-
-Square states come from the agent's own log (facts first). Two fixes
-matter: the running tool is *sticky* — status/diagnostic records no
-longer wipe it (that made web research render as "writing code") — and
-an interactive turn ends when the agent's reply is followed by a few
-seconds of log silence (interactive sessions emit no `session.end`).
-Where the log only says generic "working" with no tool, **Liquid d1.1
-classifies the activity** (`choice`: thinking / searching_system /
-searching_web / writing_code / waiting_for_user, throttled, cached
-briefly) — System 1 arbitrates exactly the ambiguous moments.
-
-Palettes are Linear-style token stacks (dark: `#08090a` canvas, `#f7f8f8`
-text, 1px `#23252a` borders; light: the same roles inverted). The header
-theme icon cycles Auto (follows the GTK system theme, switching live) →
-Light → Dark, persisted in `ui_prefs.json`; `AAT_THEME=dark|light` sets
-the initial mode, for screenshots. Richer visualization — architecture, plans, generated
-worlds — returns in the next design iteration, once we agree how to show
-more data; the Muse Image / Spark pipelines remain in `Core` meanwhile.
-
-States: [idle](docs/assets/state-idle.png) ·
-[working / BUILD ON](docs/assets/state-working.png) ·
-[thinking / COLOR FLASH](docs/assets/state-thinking.png) ·
-[needs attention / SHUFFLE](docs/assets/state-attention.png) ·
-[GLITCH](docs/assets/mode-glitch.png) · [TRAIL](docs/assets/mode-trail.png) ·
-[dark theme](docs/assets/state-dark-working.png).
-For reproducible screenshots there is a dev env var
-`AAT_MOCKSTATE=idle|working|thinking|attention|completed|glitch|trail` —
-it substitutes only the display, not the data.
-
-Known limitations: on the `TRAIL`/`GLITCH` distinction the app relies on
-tool names, so an agent that hides its tools degrades to BUILD ON.
-
-## How the spec phases map to code
-
-| Spec phase | What is implemented | Where |
-|---|---|---|
-| **1. Terminal + overlay** | A real **VTE** terminal widget (the same as in GNOME Terminal): bash/vim/tmux/htop work as usual. The overlay is native GTK widgets over the terminal (`GtkOverlay`): a system-theme surface with one animated agent square, `Ctrl+Shift+O`, auto-show during long agent runs | [native_terminal.py](desktop/native_terminal.py) |
-| **2. Session awareness** | `SessionObserver`: foreground process, cmdline, cwd from `/proc`, process tree, agent-CLI detection, command lifecycle. Observations are separated from inferences (source + confidence) | [session_observer.py](backend/app/session_observer.py) |
-| **3. Agent integration** | `MuseAdapter` for Muse: tails its replayable session JSONL log → normalized events of the spec §6.2 contract (`starting/planning/tool_running/awaiting_user/completed/failed`), plan from `write_todos`, files from tool calls, approval waits, subagent counter. Overlay auto-show with an anti-flicker threshold | [muse_adapter.py](backend/app/muse_adapter.py) |
-| **4. Project awareness** | `ProjectContextIndexer`: git root, tree, README, manifests, components and import-derived connections (Python/JS), file→component mapping. Cards: deterministic facts + Muse Spark enrichment (explanations, quiz), card saving. The spec's graphical primitives (`ComponentNode`, `Connection`, `AgentMarker`, `ActivityAnimation`, `InfoCard`, `ProgressElement`) map to pins, the status line and the insight note | [project_indexer.py](backend/app/project_indexer.py), [content.py](backend/app/content.py) |
-
-### Stack decision
-
-Spec §3.1's candidate #1 was chosen: **GTK 3 + VTE** (no Flutter in this
-environment). The first iteration went through a web UI and a WebKit
-wrapper; on the requirement "no web pages" the web stack was removed from
-the repository entirely. Now: the terminal host is `Vte.Terminal`, the
-overlay is `GtkOverlay` with native widgets (`GtkImage` for the Muse Image
-world, `GtkFixed` for component pins, `GtkLabel`/`GtkProgressBar` for
-status), and all phase 2–4 logic is the same Python backend modules,
-called in-process. There is no HTTP, WebSocket, or browser at runtime.
-
-## Hybrid infographics: AI draws, code tells the truth
-
-Muse Image is a reasoning model: it plans layout, keeps a series coherent
-through anchored composition, and an image costs $0.01. But exact text and
-numbers in generation are non-deterministic, so a generated "architecture
-diagram" would be a fake. Our split is strict:
-
-- **Generative layer** (Muse Image): the project world background, the
-  session poster. Prompts forbid text; generation is async (~15 s) and
-  cached.
-- **Factual layer** (code): nodes, connections, labels, statistics,
-  cards. Drawn natively on top of the image from the real
-  `ArchitectureModel`.
-
-The poster is made via `/v1/images/edits` with the world as a reference —
-so the islands on the poster are the same as on the map, only at sunrise
-with confetti.
-
-> Status: worlds and posters are currently **not displayed** — the
-> overlay was reduced to the minimal agent square (Design v2 above) and
-> the data visualization will be redesigned next. The generation code
-> (`Core.world_async`, `Core.poster_async`) remains in place.
-
-![The project world before the poster](docs/assets/world.webp)
-
-## Architecture
-
-![Architecture diagram](docs/assets/architecture.png)
-
-An explorable version with source links lives in the repository root:
-`.archify/architecture-agent-aware-terminal-20261031-1240/agent-aware-terminal.html`.
-
-```text
-┌───────────────── agent-aware-terminal (single process) ─────────────┐
-│ GTK window: HeaderBar · Vte.Terminal ⇄ shell / muse                 │
-│ GtkOverlay: Muse Image world · component pins · status · one note   │
-│ Side panel: history · diagnostics · settings                        │
-├─────────────────────────────────────────────────────────────────────┤
-│ Core (in-process): MuseAdapter (tails muse logs) · SessionObserver  │
-│ (/proc) · ProjectContextIndexer · cards · MetaClient                │
-│ Meta Model API: Muse Spark (text) · Muse Image (worlds & posters)   │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-## Tests
-
-```bash
-.venv/bin/python -m unittest discover -s backend/tests -v
-```
-
-9 tests: the indexer (components/connections/file→component), Muse event
-normalization (tool calls, plan, approval), replay of a real Muse session
-from this machine, and card determinism.
-
-## Known limitations and next steps
-
-- `muse exec` without a sandbox on this machine: Bubblewrap needs user
-  namespaces, and headless approval waits for external confirmation — so
-  the demo menu entry uses `muse exec --yolo` **only** on the trusted
-  demo repository. For your own projects, run interactive `muse` in the
-  terminal: the overlay will show `awaiting_user`, and you approve in the
-  agent's TUI.
-- One adapter so far (Muse). `AgentAdapter`s for Codex / Claude Code are
-  next in line; the event contract is already shared.
-- Indexer: connections only from Python/JS imports, no monorepo package
-  graph, no incremental file-watch updates yet.
-- Next per the spec: research on the auto-show threshold and
-  return-to-task metrics (spec §10).
-
-## API key safety
-
-The Meta API key is passed only via the `MODEL_API_KEY` environment
-variable of the app process. The key is not in the repository, logs, or
-code; any test key used during development must be revoked at dev.meta.ai
-afterwards.
-
-## Testing the visualization (simulator)
-
-You do not need a real agent to test the square. A *simulation* is a
-JSONL text file whose lines are streamed into the app as fake agent
-states (`backend/app/simulator.py`):
-
-```json
-{"sleep": 2, "state": "tool_running", "tool": "bash", "command": "g++ -c main.cpp -o main.o", "expect": "compile"}
-{"sleep": 2, "state": "awaiting_user", "needs": "answer", "activity": "Deploy?", "expect": "question"}
-```
-
-- Watch it live: `AAT_SIM_FILE=sims/demo_run.jsonl ./run.sh`
-  (add `AAT_SIM_LOOP=1` to loop; the header pill shows `simulator`).
-- Check it automatically, no GUI: `python3 tools/simulate.py
-  sims/demo_run.jsonl` prints the state → mode timeline and exits
-  non-zero if any `expect` mismatches. The same script is part of the
-  unit-test suite (`backend/tests/test_simulator.py`).
-
-## Other agents (Codex, Claude Code, ...)
-
-Only Muse has a log adapter. Other agent CLIs found in the terminal
-(Codex, Claude Code) are understood in two layers:
-
-1. The observer knows the agent process tree: the agent is *busy* only
-   while it has child processes working; sitting at its own prompt is
-   idle (the square just floats).
-2. While the visualization is visible, System 1 (Liquid d1.1) reads
-   the actual terminal screen text every few seconds and classifies
-   what the agent is doing (thinking, installing, compiling, asking
-   a question, ...). The deterministic layer always wins where it
-   has facts; the screen judgment only fills the gaps.
-
-## Tests
-
-- `python3 -m unittest discover -s backend/tests` — unit and
-  scenario tests: startup/history replay, every square state,
-  adapter lifecycle, scoring guards, source priority.
-- `python3 tools/check_states.py` — boots the built binary once
-  per mock state and asserts the reached mode via the decision log.
-
-## Companion content (games while the agent works)
-
-Selection is contextual, not random: a local vector index
-(EmbeddingGemma-2 quantized ONNX embeddings in SQLite; hashed-vector fallback)
-retrieves the closest not-yet-shown items for the current
-project + task — project content from `.aat/content` first —
-and System-1 picks the best of the top 10. ♥/✕ reactions bend
-future ranking (liked centroid boosts, disliked penalizes),
-and when neither project nor global content fits, the app
-files a generation request for the researcher agent
-(`.aat/research/generation_requests.jsonl`).
-
-When the agent has been busy for more than 10 seconds, the left
-pane switches from the terminal to companion content; clicking
-the square brings the terminal back. The Feed is a vertical
-deck, Shorts-style: the **All / News / Facts / Quiz / Ideas**
-chips filter it (All by default — one type at a time), **Next ↓**,
-the mouse wheel, a two-finger swipe or ↑/↓ moves through cards,
-and **↑ Prev** walks back over the ones already shown this
-session. A filter with no matching pack is not a dead end: the
-pane asks the researcher agent to create the first one (the same
-creator the bulb button launches), and the card appears when the
-deposit lands. Settings → **Watched content** resets the deck and
-its serve log, so every pack becomes unseen again; ♥/✕ reactions
-are kept.
-
-Content is served by
-`backend/app/content_engine.py` from JSON packs that are never
-baked into the binary — drop a pack into
-`~/.local/share/agent-aware-terminal/content/` (or `./content/`,
-or `$AAT_CONTENT_DIR`) and it joins the deck on the next game,
-no restart or rebuild. Pack kinds: `quiz` (scored: orbits /
-diagram / network scenes, choice rows, explanations, streaks)
-and `card` (news, refactoring suggestions — unscored). Three
-Project-correlated games and fact cards are made by the
-separate Content Researcher agent (see `content-researcher/`):
-it profiles the project's domain plus the user's latest task
-and deposits into the project's hidden `.aat/content/` folder,
-which the app serves with top priority.
-
-Base games live in the `games-base/` git submodule
-(separate repo: FastAnt/agent-aware-terminal-games — see its
-AGENTS.md for authoring); the schema and validation rules are
-documented at the top of the engine module.
+`AAT_THEME=light|dark` selects a preview theme. `AAT_MOCKSTATE=working` and other
+mock states substitute the displayed activity for visual checks. Such screenshots
+must be labelled as previews, not evidence of live agent execution. Inspect the
+instance's `decisions.log` alongside the UI when validating behavior.

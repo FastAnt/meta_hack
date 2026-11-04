@@ -23,12 +23,12 @@ read `agent-aware-terminal/games-base/AGENTS.md` and
    baseline diff, states from agent logs/commands; models only
    *judge* (completion/safety scores, picks) and their outputs
    are labelled with confidence.
-3. **Deterministic signals outrank models.** Agent state comes
-   first from logs and running commands; System-1 (Liquid
-   d1.1) is an arbiter for ambiguity (screen reading, picks,
-   scores), never the primary source. History/replay is
-   context, never live truth: an unwatched turn earns no DONE
-   and no scores.
+3. **Measurements and judgments stay distinct.** With a Liquid
+   key, System-1 screen perception is the default source of
+   activity judgments, smoothed by a state machine and grounded
+   in process presence. The legacy fallback uses logs, commands,
+   and measured screen dynamics. File changes remain measured
+   facts in both modes. Replayed history earns no live DONE or scores.
 4. **Minimal, system-native UI.** Pane follows the system
    theme (dark/light), bundled Inter grotesk, monochrome
    everywhere — no chromatic accents, no drop shadows.
@@ -50,7 +50,7 @@ read `agent-aware-terminal/games-base/AGENTS.md` and
 | `ARCHITECTURE.md` | This file |
 | `agent_aware_terminal_tz_v0_2.md` | Original hackathon brief |
 | `agent-aware-terminal/` | The application |
-| `agent-aware-terminal/desktop/native_terminal.py` | The whole GUI + `Core` orchestration (~3 600 lines, single file) |
+| `agent-aware-terminal/desktop/native_terminal.py` | The whole GUI + `Core` orchestration (single file) |
 | `agent-aware-terminal/backend/app/` | Backend modules (see below) |
 | `agent-aware-terminal/backend/tests/` | Unit tests (unittest) |
 | `agent-aware-terminal/tools/` | `test_game.py`, `simulate.py`, `check_states.py`, `content_researcher.py` |
@@ -65,7 +65,9 @@ read `agent-aware-terminal/games-base/AGENTS.md` and
 ## Runtime architecture
 
 One process. `Core` (in `native_terminal.py`) owns state;
-backend modules are pure services it calls.
+backend modules are services it calls. The diagram below shows
+the legacy observation path; with a Liquid key, screen perception
+replaces the Muse log adapter as described under Perception below.
 
 ```
 terminal (VTE) ──► session_observer (/proc foreground tree)
@@ -90,7 +92,7 @@ content_engine ◄── packs from disk (games-base, user dir,
                              reactions + generation requests)
 ```
 
-### Agent state pipeline
+### Agent state pipeline (legacy observation path)
 
 States: `starting, planning, working, tool_running,
 awaiting_user, completed, failed, idle`. Three sources, kept
@@ -228,7 +230,7 @@ inside one cycle; only the deck's own ids are reset when a full
 filtered cycle finishes.
 
 Settings → Watched content shows `served / total` and offers a
-two-step **Reset watched history**: it clears the served set in
+one-click **Reset watched history**: it clears the served set in
 `content_state.json` and the `serves` rows in `content_index.db`
 (all projects), so every pack is unseen again. ♥/✕ reactions
 and the vector index stay.
